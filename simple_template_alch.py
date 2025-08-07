@@ -37,6 +37,12 @@ class SimpleTemplateAlch:
         # Position memory file
         self.position_file = "alch_positions.json"
         
+        # Anti-detection settings
+        self.session_start_time = time.time()
+        self.last_break_time = time.time()
+        self.break_interval = random.randint(600, 1200)  # 10-20 minutes between breaks
+        self.break_duration = random.randint(30, 120)  # 30 seconds to 2 minutes
+        
     def capture_screen(self):
         """Capture the current screen"""
         try:
@@ -307,13 +313,73 @@ class SimpleTemplateAlch:
             print(f"Error detecting change: {e}")
             return False
     
+    def take_random_break(self):
+        """Take a random break to simulate human behavior"""
+        try:
+            current_time = time.time()
+            session_duration = current_time - self.session_start_time
+            
+            # Check if it's time for a break (every 10-20 minutes)
+            if current_time - self.last_break_time >= self.break_interval:
+                break_duration = random.randint(30, 120)  # 30 seconds to 2 minutes
+                print(f"   ☕ Taking a {break_duration}s break (session: {session_duration/60:.1f}min)...")
+                
+                # Move mouse to a random position during break
+                random_x = random.randint(100, 800)
+                random_y = random.randint(100, 600)
+                pyautogui.moveTo(random_x, random_y, duration=random.uniform(0.5, 1.0))
+                
+                time.sleep(break_duration)
+                self.last_break_time = current_time
+                print(f"   ✅ Break finished, resuming...")
+                return True
+            return False
+        except Exception as e:
+            print(f"Error in random break: {e}")
+            return False
+    
+    def add_natural_mouse_movement(self):
+        """Add occasional natural mouse movements"""
+        try:
+            # 3% chance of random mouse movement
+            if random.random() < 0.03:
+                # Move to a random position on screen
+                random_x = random.randint(100, 1200)
+                random_y = random.randint(100, 800)
+                
+                print(f"   🖱️ Natural mouse movement to ({random_x}, {random_y})...")
+                pyautogui.moveTo(random_x, random_y, duration=random.uniform(0.3, 0.8))
+                time.sleep(random.uniform(0.5, 2.0))  # Brief pause
+                return True
+            return False
+        except Exception as e:
+            print(f"Error in natural mouse movement: {e}")
+            return False
+    
+    def simulate_human_error(self):
+        """Occasionally simulate human errors"""
+        try:
+            # 2% chance of "human error" - click slightly wrong
+            if random.random() < 0.02:
+                print(f"   🤦 Simulating human error (slight misclick)...")
+                time.sleep(random.uniform(0.2, 0.5))
+                return True
+            return False
+        except Exception as e:
+            print(f"Error in human error simulation: {e}")
+            return False
+    
     def start_watching(self):
         """Start the simple template alch clicking process"""
-        print("🔍 Starting Simple Template Alch Clicker...")
+        print("🔍 Starting Advanced Anti-Detection Alch Clicker...")
         print("Step 1: Find alchemy spell")
         print("Step 2: Click spell")
         print("Step 3: Find arrows")
         print("Step 4: Click arrows")
+        print("Anti-detection features:")
+        print("  ☕ Random breaks (30s-2min every 10-20min)")
+        print("  🖱️ Natural mouse movements (3% chance)")
+        print("  🤦 Human error simulation (2% chance)")
         print("Press Ctrl+C to stop.")
         print("Move mouse to corner to emergency stop.")
         print(f"🎯 Click variation: ±{self.click_variation} pixels from center")
@@ -344,6 +410,11 @@ class SimpleTemplateAlch:
                 if current_frame is not None:
                     # Check for changes
                     has_changed = self.detect_change(current_frame, self.previous_screenshot)
+                    
+                    # Anti-detection features
+                    self.take_random_break()
+                    self.add_natural_mouse_movement()
+                    self.simulate_human_error()
                     
                     # Only act if enough time has passed since last action
                     # Randomize cooldown for each cycle - more realistic
@@ -419,9 +490,9 @@ class SimpleTemplateAlch:
         self.is_watching = False
 
 def main():
-    """Main function to run the Simple Template Alch Clicker"""
-    print("🤖 Simple Template Alch Clicker - Accurate Detection")
-    print("=" * 55)
+    """Main function to run the Advanced Anti-Detection Alch Clicker"""
+    print("🤖 Advanced Anti-Detection Alch Clicker - Human-like Behavior")
+    print("=" * 60)
     
     # Check if required packages are available
     try:
