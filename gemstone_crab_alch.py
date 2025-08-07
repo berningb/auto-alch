@@ -11,7 +11,7 @@ import json
 pyautogui.FAILSAFE = True  # Move mouse to corner to stop
 pyautogui.PAUSE = 0.1  # Small pause between actions
 
-class SimpleTemplateAlch:
+class GemstoneCrabAlch:
     def __init__(self):
         self.previous_screenshot = None
         self.is_watching = False
@@ -421,8 +421,8 @@ class SimpleTemplateAlch:
             return False
     
     def start_watching(self):
-        """Start the simple template alch clicking process"""
-        print("🔍 Starting Advanced Anti-Detection Alch Clicker...")
+        """Start the gemstone crab alch clicking process"""
+        print("🔍 Starting Gemstone Crab Alch Clicker...")
         print("Step 1: Find alchemy spell")
         print("Step 2: Click spell")
         print("Step 3: Find arrows")
@@ -464,18 +464,15 @@ class SimpleTemplateAlch:
                     # Check for changes
                     has_changed = self.detect_change(current_frame, self.previous_screenshot)
                     
+                    # Anti-detection features
+                    self.take_random_break()
+                    self.add_natural_mouse_movement()
+                    self.simulate_human_error()
+                    
                     # Only act if enough time has passed since last action
                     # Randomize cooldown for each cycle - more realistic
                     current_cooldown = random.uniform(0.1, 0.5)
                     if current_time - self.last_action_time >= current_cooldown:
-                        
-                        # Anti-detection features (less frequent)
-                        if random.random() < 0.1:  # 10% chance per cycle
-                            self.take_random_break()
-                        if random.random() < 0.05:  # 5% chance per cycle
-                            self.add_natural_mouse_movement()
-                        if random.random() < 0.03:  # 3% chance per cycle
-                            self.simulate_human_error()
                         
                         if self.waiting_for_alch_spell:
                             # Step 1: Look for alchemy spell
@@ -506,10 +503,11 @@ class SimpleTemplateAlch:
                                 # Use remembered position
                                 print(f"   🏹 Using remembered arrow position: {self.arrow_position}")
                                 if self.click_arrows(self.arrow_position):
-                                    self.waiting_for_alch_spell = True
+                                    self.waiting_for_alch_spell = False
                                     self.waiting_for_arrows = False
+                                    self.waiting_for_crab = True
                                     self.last_action_time = current_time
-                                    print("   🔄 Now waiting for alchemy spell...")
+                                    print("   🔄 Now waiting for gemstone crab...")
                             else:
                                 # Find arrows
                                 arrow_position, arrow_confidence = self.detect_arrows(current_frame)
@@ -561,17 +559,8 @@ class SimpleTemplateAlch:
                 # Small delay to prevent excessive CPU usage
                 time.sleep(0.1)  # Faster response time for template matching
                 
-                # Debug: Show current state occasionally
-                if random.random() < 0.01:  # 1% chance to show debug info
-                    if self.waiting_for_alch_spell:
-                        print("   🔍 Debug: Currently waiting for alchemy spell...")
-                    elif self.waiting_for_arrows:
-                        print("   🔍 Debug: Currently waiting for arrows...")
-                    elif self.waiting_for_crab:
-                        print("   🔍 Debug: Currently waiting for gemstone crab...")
-                
             except KeyboardInterrupt:
-                print("\n🛑 Stopping Simple Template Alch Clicker...")
+                print("\n🛑 Stopping Gemstone Crab Alch Clicker...")
                 print(f"📊 Total clicks performed: {self.click_count}")
                 self.is_watching = False
                 break
@@ -584,8 +573,8 @@ class SimpleTemplateAlch:
         self.is_watching = False
 
 def main():
-    """Main function to run the Advanced Anti-Detection Alch Clicker"""
-    print("🤖 Advanced Anti-Detection Alch Clicker - Human-like Behavior")
+    """Main function to run the Gemstone Crab Alch Clicker"""
+    print("🤖 Gemstone Crab Alch Clicker - Advanced Anti-Detection")
     print("=" * 60)
     
     # Check if required packages are available
@@ -599,8 +588,8 @@ def main():
         print("python -m pip install opencv-python pyautogui numpy")
         return
     
-    # Create and start the Simple Template Alch Clicker
-    clicker = SimpleTemplateAlch()
+    # Create and start the Gemstone Crab Alch Clicker
+    clicker = GemstoneCrabAlch()
     
     try:
         clicker.start_watching()
@@ -611,4 +600,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
