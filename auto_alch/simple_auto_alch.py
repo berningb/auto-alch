@@ -9,7 +9,9 @@ import pyautogui
 import time
 import random
 import os
+import threading
 from datetime import datetime
+from pynput import keyboard
 
 # Configure pyautogui for safety
 pyautogui.FAILSAFE = True  # Move mouse to corner to stop
@@ -21,6 +23,7 @@ class SimpleAutoAlch:
         self.dart_template = None
         self.click_count = 0
         self.is_running = False
+        self.is_paused = False
         
         # Humanization settings
         self.session_start_time = time.time()
@@ -31,6 +34,13 @@ class SimpleAutoAlch:
         # State tracking
         self.waiting_for_alch_spell = True
         self.waiting_for_darts = False
+        
+        # Recovery tracking
+        self.dart_fail_count = 0
+        self.max_dart_fails = 3  # After 3 failed attempts, try inventory recovery
+        
+        # Keyboard listener for pause functionality
+        self.keyboard_listener = None
         
     def load_templates(self):
         """Load the template images"""
@@ -67,6 +77,7 @@ class SimpleAutoAlch:
             # Load dart templates
             self.dart_template = None
             self.dart_template2 = None
+            self.dart_template3 = None
             
             dart_path = os.path.join(current_dir, "dart.png")
             if os.path.exists(dart_path):
@@ -82,8 +93,15 @@ class SimpleAutoAlch:
             else:
                 print(f"❌ Could not find {dart2_path}")
             
-            if self.dart_template is None and self.dart_template2 is None:
-                print("❌ No dart templates found. Please create dart.png or dart2.png")
+            dart3_path = os.path.join(current_dir, "dart3.png")
+            if os.path.exists(dart3_path):
+                self.dart_template3 = cv2.imread(dart3_path)
+                print("✅ Loaded dart template 3 (dart3.png)")
+            else:
+                print(f"❌ Could not find {dart3_path}")
+            
+            if self.dart_template is None and self.dart_template2 is None and self.dart_template3 is None:
+                print("❌ No dart templates found. Please create dart.png, dart2.png, or dart3.png")
                 return False
                 
             return True
@@ -133,17 +151,26 @@ class SimpleAutoAlch:
     
     def find_darts(self, screen):
         """Find darts in screen"""
-        # Try both dart templates and use the one with better confidence
+        # Try all dart templates and use the one with better confidence
         result1, conf1 = self.find_template(screen, self.dart_template, threshold=0.55)
         result2, conf2 = self.find_template(screen, self.dart_template2, threshold=0.55)
+        result3, conf3 = self.find_template(screen, self.dart_template3, threshold=0.55)
         
-        # Use whichever template gives better confidence
-        if conf1 > conf2:
+        # Find the best confidence among all templates
+        best_confidence = max(conf1, conf2, conf3)
+        
+        if best_confidence == conf1 and result1:
             print(f"   📊 Using dart template 1 (confidence: {conf1:.2f})")
             return result1, conf1
-        else:
+        elif best_confidence == conf2 and result2:
             print(f"   📊 Using dart template 2 (confidence: {conf2:.2f})")
             return result2, conf2
+        elif best_confidence == conf3 and result3:
+            print(f"   📊 Using dart template 3 (confidence: {conf3:.2f})")
+            return result3, conf3
+        else:
+            # Return the best confidence even if no match found
+            return None, best_confidence
     
     def add_click_variation(self, position):
         """Add random variation to click position"""
@@ -215,10 +242,13 @@ class SimpleAutoAlch:
             print(f"Error clicking: {e}")
             return False
     
-    def press_key(self, key):
+    def press_key(self, key, description=""):
         """Press a key with human-like timing"""
         try:
-            print(f"   ⌨️ Pressing '{key}' to open spellbook...")
+            if description:
+                print(f"   ⌨️ Pressing '{key}' to {description}...")
+            else:
+                print(f"   ⌨️ Pressing '{key}'...")
             time.sleep(random.uniform(0.1, 0.3))
             pyautogui.press(key)
             time.sleep(random.uniform(0.2, 0.5))
@@ -254,6 +284,128 @@ class SimpleAutoAlch:
             print(f"Error capturing screen: {e}")
             return None
     
+    def on_key_press(self, key):
+        """Handle key press events"""
+        try:
+            if key.char == 'p':
+                self.is_paused = not self.is_paused
+                if self.is_paused:
+                    print("\n⏸️  Script PAUSED - Press 'p' again to resume...")
+                else:
+                    print("\n▶️  Script RESUMED...")
+                time.sleep(0.3)  # Prevent multiple toggles
+        except AttributeError:
+            pass
+    
+    def start_keyboard_listener(self):
+        """Start keyboard listener for pause functionality"""
+        try:
+            self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
+            self.keyboard_listener.start()
+            print("✅ Keyboard listener started - Press 'p' to pause/resume")
+        except Exception as e:
+            print(f"⚠️  Could not start keyboard listener: {e}")
+            print("   Pause functionality will not be available")
+    
+    def move_mouse_away_from_spells(self):
+        """Move mouse away from spells to clear potential popups"""
+        try:
+            # Get current mouse position
+            current_x, current_y = pyautogui.position()
+            
+            # Calculate new position (move ~200 pixels left)
+            new_x = current_x - random.randint(180, 220)  # Random variation for humanization
+            
+            # Keep mouse within screen bounds
+            screen_width, screen_height = pyautogui.size()
+            new_x = max(50, min(new_x, screen_width - 50))  # Keep away from edges
+            
+            # Human-like movement duration
+            distance = abs(new_x - current_x)
+            movement_duration = random.uniform(0.2, 0.4)  # Quick but natural movement
+            
+            # Move mouse with slight curve for natural movement
+            waypoint_x = current_x + (new_x - current_x) * random.uniform(0.3, 0.7)
+            waypoint_y = current_y + random.randint(-10, 10)  # Slight vertical variation
+            
+            # Move through waypoint to target
+            pyautogui.moveTo(waypoint_x, waypoint_y, duration=movement_duration * 0.6)
+            pyautogui.moveTo(new_x, current_y, duration=movement_duration * 0.4)
+            
+            print(f"   🖱️  Moved mouse from ({current_x}, {current_y}) to ({new_x}, {current_y}) to clear popup")
+            
+        except Exception as e:
+            print(f"   ❌ Error moving mouse: {e}")
+    
+    def recover_from_inventory(self):
+        """Recover from stuck state by checking inventory for darts"""
+        try:
+            print("   📦 Opening inventory to look for darts...")
+            self.press_key('5', "open inventory")
+            time.sleep(0.5)
+            
+            # Capture screen after opening inventory
+            screen = self.capture_screen()
+            if screen is None:
+                print("   ❌ Could not capture screen for inventory recovery")
+                return False
+            
+            # Look for darts in inventory (using dart3 template)
+            print("   🔍 Looking for darts in inventory...")
+            dart_position, dart_confidence = self.find_template(screen, self.dart_template3, threshold=0.55)
+            
+            if dart_position and dart_confidence > 0.55:
+                print(f"   🎯 Found darts in inventory (confidence: {dart_confidence:.2f})")
+                if self.human_click(dart_position, "🎯 Clicked darts in inventory"):
+                    print("   ✅ Successfully clicked darts in inventory")
+                    
+                    # Wait and check that darts are no longer visible on screen (faster)
+                    print("   ⏳ Waiting to confirm darts are no longer visible...")
+                    max_checks = 4  # Check up to 4 times (2 seconds)
+                    darts_disappeared = False
+                    for check in range(max_checks):
+                        time.sleep(0.3)  # Faster checks
+                        screen = self.capture_screen()
+                        if screen is None:
+                            continue
+                        
+                        # Check if darts are still visible
+                        dart_position, dart_confidence = self.find_template(screen, self.dart_template3, threshold=0.55)
+                        if dart_position is None or dart_confidence < 0.55:
+                            print(f"   ✅ Darts no longer visible on screen (check {check + 1}/{max_checks})")
+                            darts_disappeared = True
+                            break
+                        else:
+                            print(f"   🔍 Darts still visible (confidence: {dart_confidence:.2f}), waiting...")
+                    
+                    # If darts didn't disappear, try clicking again (faster)
+                    if not darts_disappeared:
+                        print("   ⚠️  Darts still visible after clicking, trying one more time...")
+                        screen = self.capture_screen()
+                        if screen is not None:
+                            dart_position, dart_confidence = self.find_template(screen, self.dart_template3, threshold=0.55)
+                            if dart_position and dart_confidence > 0.55:
+                                print(f"   🎯 Clicking darts again (confidence: {dart_confidence:.2f})")
+                                self.human_click(dart_position, "🎯 Clicked darts in inventory (retry)")
+                                time.sleep(0.5)  # Shorter wait after second click
+                    
+                    # Now go back to spellbook
+                    print("   📚 Returning to spellbook...")
+                    self.press_key('3', "open spellbook")
+                    time.sleep(0.3)  # Faster return to spellbook
+                    return True
+            else:
+                print(f"   ❌ No darts found in inventory (best match: {dart_confidence:.2f})")
+                # Still go back to spellbook even if no darts found
+                print("   📚 Returning to spellbook...")
+                self.press_key('3', "open spellbook")
+                time.sleep(0.5)
+                return False
+                
+        except Exception as e:
+            print(f"   ❌ Error during inventory recovery: {e}")
+            return False
+    
     def start(self):
         """Start the auto alch process"""
         print("🤖 Simple Auto Alch - Alch Spell + Darts")
@@ -265,6 +417,7 @@ class SimpleAutoAlch:
         print()
         print("Press Ctrl+C to stop.")
         print("Move mouse to corner for emergency stop.")
+        print("Press 'p' to pause/resume the script.")
         print(f"⏰ Break every {self.break_interval/60:.1f} minutes")
         print()
         
@@ -272,10 +425,18 @@ class SimpleAutoAlch:
         if not self.load_templates():
             return
         
+        # Start keyboard listener for pause functionality
+        self.start_keyboard_listener()
+        
         self.is_running = True
         
         while self.is_running:
             try:
+                # Check if script is paused
+                if self.is_paused:
+                    time.sleep(0.5)
+                    continue
+                
                 # Check for break time
                 self.check_break_time()
                 
@@ -297,11 +458,11 @@ class SimpleAutoAlch:
                             self.waiting_for_darts = True
                             print("   🔄 Now looking for darts...")
                             print("   ⏳ Waiting for alch spell animation...")
-                            time.sleep(random.uniform(3.0, 4.0))  # Wait for alch spell animation
+                            time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                     else:
                         # Only press '3' if we can't find the alch spell
                         print("   🔍 Alch spell not found, pressing '3' to open spellbook...")
-                        self.press_key('3')
+                        self.press_key('3', "open spellbook")
                         time.sleep(0.5)
                         
                         # Check again after pressing '3'
@@ -315,10 +476,31 @@ class SimpleAutoAlch:
                                     self.waiting_for_darts = True
                                     print("   🔄 Now looking for darts...")
                                     print("   ⏳ Waiting for alch spell animation...")
-                                    time.sleep(random.uniform(3.0, 4.0))  # Wait for alch spell animation
+                                    time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                             else:
-                                print("   🔍 Alch spell still not found, retrying...")
-                                time.sleep(0.5)
+                                # Alch spell not found - might be covered by popup, move mouse away
+                                print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
+                                self.move_mouse_away_from_spells()
+                                time.sleep(0.3)  # Brief wait for popup to disappear
+                                
+                                # Check again after moving mouse
+                                screen = self.capture_screen()
+                                if screen is not None:
+                                    alch_position, alch_confidence = self.find_alch_spell(screen)
+                                    if alch_position and alch_confidence > 0.7:
+                                        print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
+                                        if self.human_click(alch_position, "🔮 Clicked alch spell"):
+                                            self.waiting_for_alch_spell = False
+                                            self.waiting_for_darts = True
+                                            print("   🔄 Now looking for darts...")
+                                            print("   ⏳ Waiting for alch spell animation...")
+                                            time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
+                                    else:
+                                        print("   🔍 Alch spell still not found after moving mouse, retrying...")
+                                        time.sleep(0.5)
+                                else:
+                                    print("   🔍 Alch spell still not found, retrying...")
+                                    time.sleep(0.5)
                         
                         # Capture new frame after pressing key
                         updated_screen = self.capture_screen()
@@ -331,11 +513,32 @@ class SimpleAutoAlch:
                                     self.waiting_for_alch_spell = False
                                     self.waiting_for_darts = True
                                     print("   🔄 Now looking for darts...")
-                                    print("   ⏳ Waiting 3-4 seconds for alch spell animation...")
-                                    time.sleep(random.uniform(3.0, 4.0))  # Wait for alch spell animation
+                                    print("   ⏳ Waiting for alch spell animation...")
+                                    time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                             else:
-                                print("   🔍 Alch spell still not found, retrying...")
-                                time.sleep(0.5)
+                                # Alch spell not found - might be covered by popup, move mouse away
+                                print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
+                                self.move_mouse_away_from_spells()
+                                time.sleep(0.3)  # Brief wait for popup to disappear
+                                
+                                # Check again after moving mouse
+                                screen = self.capture_screen()
+                                if screen is not None:
+                                    alch_position, alch_confidence = self.find_alch_spell(screen)
+                                    if alch_position and alch_confidence > 0.7:
+                                        print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
+                                        if self.human_click(alch_position, "🔮 Clicked alch spell"):
+                                            self.waiting_for_alch_spell = False
+                                            self.waiting_for_darts = True
+                                            print("   🔄 Now looking for darts...")
+                                            print("   ⏳ Waiting for alch spell animation...")
+                                            time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
+                                    else:
+                                        print("   🔍 Alch spell still not found after moving mouse, retrying...")
+                                        time.sleep(0.5)
+                                else:
+                                    print("   🔍 Alch spell still not found, retrying...")
+                                    time.sleep(0.5)
                 
                 elif self.waiting_for_darts:
                     print("   🔍 Looking for darts...")
@@ -348,11 +551,26 @@ class SimpleAutoAlch:
                             print(f"   📊 Total clicks: {self.click_count}")
                             self.waiting_for_alch_spell = True
                             self.waiting_for_darts = False
+                            self.dart_fail_count = 0  # Reset fail count on success
                             print("   🔄 Now looking for alch spell...")
                             time.sleep(random.uniform(0.5, 1.0))
                     else:
-                        print(f"   🔍 Darts not found (best match: {dart_confidence:.2f}), retrying...")
-                        time.sleep(0.5)
+                        self.dart_fail_count += 1
+                        print(f"   🔍 Darts not found (best match: {dart_confidence:.2f}), attempt {self.dart_fail_count}/{self.max_dart_fails}")
+                        
+                        # If we've failed too many times, try inventory recovery
+                        if self.dart_fail_count >= self.max_dart_fails:
+                            print("   🚨 Too many dart failures - attempting inventory recovery...")
+                            if self.recover_from_inventory():
+                                self.dart_fail_count = 0  # Reset counter
+                                self.waiting_for_alch_spell = True
+                                self.waiting_for_darts = False
+                                print("   ✅ Recovery successful - returning to alch spell...")
+                            else:
+                                print("   ❌ Recovery failed - continuing to retry...")
+                                self.dart_fail_count = 0  # Reset counter to try again
+                        else:
+                            time.sleep(0.5)
                 
             except KeyboardInterrupt:
                 print("\n🛑 Stopping Auto Alch...")
@@ -366,6 +584,10 @@ class SimpleAutoAlch:
             except Exception as e:
                 print(f"Error: {e}")
                 time.sleep(1)
+        
+        # Stop keyboard listener
+        if self.keyboard_listener:
+            self.keyboard_listener.stop()
 
 def main():
     """Main function"""
@@ -376,9 +598,10 @@ def main():
         import cv2
         import pyautogui
         import numpy as np
+        from pynput import keyboard
     except ImportError as e:
         print(f"❌ Missing package: {e}")
-        print("Install with: pip install opencv-python pyautogui numpy")
+        print("Install with: pip install opencv-python pyautogui numpy pynput")
         return
     
     # Create and start
