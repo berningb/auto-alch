@@ -22,21 +22,36 @@ class AutoActionFunctions:
         self.stats_template = None
         self.skill_templates = {}  # Dictionary to store skill templates
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.quick_prayer_template = None
+        self.config_path = os.path.join(self.current_dir, "config.json")
+        self.qp_center = None  # (x, y) absolute screen coords
+        self.qp_radius = None  # float
+        self.qp_last_point = None  # last in-orb click point for micro-movement continuity
+        self.qp_anchor_point = None  # slowly drifting "norm" point within orb
         
         # Load templates on initialization
         self.load_templates()
+        # Load any saved calibration
+        self._load_config()
     
     def load_templates(self):
         """Load template images for detection"""
         try:
-            # Load stats template
-            stats_path = os.path.join(self.current_dir, "images", "stats.png")
-            
-            if os.path.exists(stats_path):
-                self.stats_template = cv2.imread(stats_path)
-                print(f"✅ Loaded stats template from {stats_path}")
-            else:
-                print(f"❌ Stats template not found at {stats_path}")
+            # Load stats template (try multiple common locations)
+            candidate_stats_paths = [
+                os.path.join(self.current_dir, "images", "stats.png"),
+                os.path.join(self.current_dir, "skills", "images", "stats.png"),
+                os.path.join(self.current_dir, "skills", "images", "stats_full.png"),
+            ]
+            self.stats_template = None
+            for candidate in candidate_stats_paths:
+                if os.path.exists(candidate):
+                    self.stats_template = cv2.imread(candidate)
+                    if self.stats_template is not None:
+                        print(f"✅ Loaded stats template from {candidate}")
+                        break
+            if self.stats_template is None:
+                print("ℹ️ No stats template found (optional). Skipping stats page verification.")
             
             # Load skill templates
             skills_dir = os.path.join(self.current_dir, "skills", "images")
@@ -67,9 +82,310 @@ class AutoActionFunctions:
             else:
                 print(f"❌ Skills tab template not found at {skills_tab_path}")
                 self.skills_tab_template = None
+            
+            # Load quick-prayer template if present
+            qp_candidates = [
+                os.path.join(self.current_dir, "images", "quick_prayer.png"),
+                os.path.join(self.current_dir, "skills", "images", "quick_prayer.png"),
+            ]
+            for qp in qp_candidates:
+                if os.path.exists(qp):
+                    self.quick_prayer_template = cv2.imread(qp)
+                    if self.quick_prayer_template is not None:
+                        print(f"✅ Loaded quick-prayer template from {qp}")
+                        break
+            if self.quick_prayer_template is None:
+                print("ℹ️ Quick-prayer template not found (mouse flick optional)")
                 
         except Exception as e:
             print(f"Error loading templates: {e}")
+    
+    # --- Rapid input helpers for precise timing actions (e.g., prayer flick) ---
+    def rapid_press(self, key: str, hold_seconds: float = 0.0):
+        """Press a key with minimal global delay, optionally holding briefly.
+        Respects a local timing without the module-wide pyautogui.PAUSE.
+        """
+        try:
+            original_pause = pyautogui.PAUSE
+            pyautogui.PAUSE = 0  # ensure immediate
+            if hold_seconds and hold_seconds > 0:
+                pyautogui.keyDown(key)
+                time.sleep(hold_seconds)
+                pyautogui.keyUp(key)
+            else:
+                pyautogui.press(key)
+        finally:
+            # restore global pause setting
+            try:
+                pyautogui.PAUSE = original_pause
+            except Exception:
+                pass
+
+    # --- Quick-prayer calibration storage ---
+    def _load_config(self):
+        try:
+            if os.path.exists(self.config_path):
+                import json
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                qp = data.get("quick_prayer", {})
+                if "center" in qp and isinstance(qp["center"], list) and len(qp["center"]) == 2:
+                    self.qp_center = (int(qp["center"][0]), int(qp["center"][1]))
+                if "radius" in qp:
+                    self.qp_radius = float(qp["radius"])
+                if self.qp_center:
+                    print(f"🗺️ Loaded Quick-prayer calibration: center={self.qp_center}, radius={self.qp_radius}")
+        except Exception as e:
+            print(f"⚠️ Failed to load config: {e}")
+
+    def _save_config(self):
+        try:
+            import json
+            data = {}
+            if os.path.exists(self.config_path):
+                try:
+                    with open(self.config_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+            data.setdefault("quick_prayer", {})
+            if self.qp_center:
+                data["quick_prayer"]["center"] = [int(self.qp_center[0]), int(self.qp_center[1])]
+            if self.qp_radius:
+                data["quick_prayer"]["radius"] = float(self.qp_radius)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            print("💾 Saved Quick-prayer calibration.")
+        except Exception as e:
+            print(f"⚠️ Failed to save config: {e}")
+
+    def set_quick_prayer_center(self, x: int, y: int):
+        self.qp_center = (int(x), int(y))
+        print(f"📍 Set Quick-prayer center to {self.qp_center}")
+        self._save_config()
+
+    def set_quick_prayer_edge(self, x: int, y: int):
+        if self.qp_center is None:
+            print("⚠️ Set center first (hotkey) before edge to compute radius.")
+            return
+        dx = int(x) - self.qp_center[0]
+        dy = int(y) - self.qp_center[1]
+        self.qp_radius = max(4.0, (dx * dx + dy * dy) ** 0.5)
+        print(f"📏 Computed Quick-prayer radius ≈ {self.qp_radius:.1f} pixels")
+        self._save_config()
+
+    def get_quick_prayer_click_point(self):
+        if not self.qp_center:
+            return None
+        cx, cy = self.qp_center
+        # Click slightly within the radius; if radius unknown, small jitter
+        r = self.qp_radius if self.qp_radius else 10.0
+        r = max(6.0, min(r - 3.0, 20.0))
+        angle = random.uniform(0, 2 * np.pi)
+        # Use sqrt for uniform area distribution within circle
+        dist = r * (random.random() ** 0.5)
+        jitter_x = int(dist * np.cos(angle))
+        jitter_y = int(dist * np.sin(angle))
+        return (cx + jitter_x, cy + jitter_y)
+
+    def random_point_in_orb(self, center=None, radius=None):
+        base_center = center if center is not None else self.qp_center
+        base_radius = radius if radius is not None else self.qp_radius
+        if base_center is None:
+            return None
+        cx, cy = base_center
+        r = base_radius if base_radius else 10.0
+        r = max(6.0, min(r - 3.0, 20.0))
+        angle = random.uniform(0, 2 * np.pi)
+        dist = r * (random.random() ** 0.5)
+        return (int(cx + dist * np.cos(angle)), int(cy + dist * np.sin(angle)))
+
+    def step_point_in_orb(self, prev_point=None, center=None, radius=None, min_step: int = 2, max_step: int = 6):
+        """Take a small step from the previous point within the orb bounds for natural micro movement."""
+        base_center = center if center is not None else self.qp_center
+        base_radius = radius if radius is not None else self.qp_radius
+        if base_center is None:
+            return None
+        cx, cy = base_center
+        if prev_point is None:
+            prev_point = (cx, cy)
+        px, py = prev_point
+        # Choose a small random step
+        step = random.randint(min_step, max_step)
+        angle = random.uniform(0, 2 * np.pi)
+        nx = px + int(step * np.cos(angle))
+        ny = py + int(step * np.sin(angle))
+        # Clamp to orb interior (shrink by 3px margin)
+        r = base_radius if base_radius else 10.0
+        r_eff = max(6.0, r - 3.0)
+        # If outside, project back onto circle
+        dx = nx - cx
+        dy = ny - cy
+        dist = (dx * dx + dy * dy) ** 0.5
+        if dist > r_eff:
+            if dist == 0:
+                nx, ny = cx, cy
+            else:
+                scale = r_eff / dist
+                nx = int(cx + dx * scale)
+                ny = int(cy + dy * scale)
+        return (nx, ny)
+
+    def next_micro_point(self, prev_point=None, center=None, radius=None):
+        """Choose the next in-orb point using human profile: ~90% 1–3 px, ~10% 4–6 px steps."""
+        # Primary small steps
+        if random.random() < 0.9:
+            return self.step_point_in_orb(prev_point=prev_point, center=center, radius=radius, min_step=1, max_step=3)
+        # Occasional slightly larger correction
+        return self.step_point_in_orb(prev_point=prev_point, center=center, radius=radius, min_step=4, max_step=6)
+
+    # --- Humanized quick movement for near-instant but realistic motion ---
+    def human_quick_move(self, target_x: int, target_y: int):
+        try:
+            start_x, start_y = pyautogui.position()
+            dx = target_x - start_x
+            dy = target_y - start_y
+            distance = (dx * dx + dy * dy) ** 0.5
+
+            if distance < 80:
+                total_dur = random.uniform(0.10, 0.16)
+            elif distance < 240:
+                total_dur = random.uniform(0.16, 0.26)
+            else:
+                total_dur = random.uniform(0.22, 0.34)
+
+            # Waypoint at 40–70% with small offset for curvature
+            wp_frac = random.uniform(0.4, 0.7)
+            wp_x = start_x + dx * wp_frac + random.randint(-3, 3)
+            wp_y = start_y + dy * wp_frac + random.randint(-3, 3)
+
+            pyautogui.moveTo(wp_x, wp_y, duration=total_dur * 0.55)
+            pyautogui.moveTo(target_x, target_y, duration=total_dur * 0.45)
+        except Exception as e:
+            print(f"⚠️ human_quick_move failed: {e}")
+
+    def human_micro_move(self, target_x: int, target_y: int):
+        """Very small motion for within-orb adjustments; fast but not teleporting."""
+        try:
+            start_x, start_y = pyautogui.position()
+            dx = target_x - start_x
+            dy = target_y - start_y
+            distance = (dx * dx + dy * dy) ** 0.5
+            if distance < 1:
+                return
+            duration = random.uniform(0.015, 0.05)
+            pyautogui.moveTo(target_x, target_y, duration=duration)
+        except Exception as e:
+            print(f"⚠️ human_micro_move failed: {e}")
+
+    def human_click_hold(self, x: int, y: int, hold_ms: int = 35):
+        try:
+            pyautogui.mouseDown(x=x, y=y, button='left')
+            time.sleep(max(0.02, hold_ms / 1000.0))
+            pyautogui.mouseUp(x=x, y=y, button='left')
+        except Exception as e:
+            print(f"⚠️ human_click_hold failed: {e}")
+
+    def pray_tick(
+        self,
+        quick_prayer_key: str = 'f1',
+        min_gap_ms: int = 40,
+        max_gap_ms: int = 90,
+        use_mouse: bool = True,
+        settle_ms_min: int = 60,
+        settle_ms_max: int = 110,
+        hold_on_ms_min: int = 60,
+        hold_on_ms_max: int = 100,
+        hold_off_ms_min: int = 60,
+        hold_off_ms_max: int = 100,
+    ):
+        """Perform a quick-prayer flick (toggle on then off rapidly).
+
+        Args:
+            quick_prayer_key: Hotkey bound to Quick-prayers toggle (used if use_mouse=False).
+            min_gap_ms: Minimum gap between ON and OFF in milliseconds.
+            max_gap_ms: Maximum gap between ON and OFF in milliseconds.
+            use_mouse: If True, click the quick-prayer icon on the HUD via color; fallback to template if present.
+        """
+        try:
+            gap = random.uniform(min_gap_ms / 1000.0, max_gap_ms / 1000.0)
+            settle = random.uniform(max(0.0, settle_ms_min) / 1000.0, max(settle_ms_min, settle_ms_max) / 1000.0)
+            hold_on = random.randint(max(1, hold_on_ms_min), max(hold_on_ms_min, hold_on_ms_max))
+            hold_off = random.randint(max(1, hold_off_ms_min), max(hold_off_ms_min, hold_off_ms_max))
+            if use_mouse:
+                screen = self.capture_screen()
+                if screen is None:
+                    return False
+                # Prefer calibrated location; start from last/anchor for continuity
+                pos_center = self.qp_center
+                pos_radius = self.qp_radius
+                base = self.qp_last_point or self.qp_anchor_point
+                if base is None and pos_center is not None:
+                    # Initialize anchor near center
+                    self.qp_anchor_point = self.random_point_in_orb(center=pos_center, radius=pos_radius)
+                    base = self.qp_anchor_point
+                # Small step from base; if no base, fall back to a random in-orb point
+                if base is not None:
+                    pos = self.next_micro_point(prev_point=base, center=pos_center, radius=pos_radius)
+                else:
+                    pos = self.random_point_in_orb(center=pos_center, radius=pos_radius)
+                if pos is None:
+                    # Color-based locate first
+                    try:
+                        detected_center = self.find_quick_prayer_orb(screen)
+                        pos = detected_center
+                    except Exception:
+                        pos = None
+                # Fallback to template center
+                if pos is None and self.quick_prayer_template is not None:
+                    qp_pos, qp_conf = self.find_template(screen, self.quick_prayer_template, threshold=0.65)
+                    if qp_pos:
+                        # Small jitter around template center
+                        cx, cy = qp_pos
+                        pos = (cx + random.randint(-4, 4), cy + random.randint(-4, 4))
+                if pos is None:
+                    print("⚠️ Quick-prayer icon not located")
+                    return False
+                original_pause = pyautogui.PAUSE
+                pyautogui.PAUSE = 0
+                # Quick but realistic movement; micro if close
+                cur_x, cur_y = pyautogui.position()
+                if ((pos[0]-cur_x)**2 + (pos[1]-cur_y)**2) ** 0.5 <= 12:
+                    self.human_micro_move(pos[0], pos[1])
+                else:
+                    self.human_quick_move(pos[0], pos[1])
+                # Brief settle before click for reliability
+                time.sleep(settle)
+                # Click ON with a short hold
+                self.human_click_hold(pos[0], pos[1], hold_ms=hold_on)
+                # Gap between toggles
+                time.sleep(gap)
+                # Slightly different nearby point within the orb for OFF (micro step)
+                if pos_center is not None:
+                    pos2 = self.next_micro_point(prev_point=pos, center=pos_center, radius=pos_radius)
+                else:
+                    pos2 = (pos[0] + random.randint(-2, 2), pos[1] + random.randint(-2, 2))
+                # Minimal micro-move to emulate human adjustment
+                self.human_micro_move(pos2[0], pos2[1])
+                # Click OFF with a short hold
+                self.human_click_hold(pos2[0], pos2[1], hold_ms=hold_off)
+                pyautogui.PAUSE = original_pause
+                # Remember last point for next invocation to avoid big jumps
+                self.qp_last_point = pos2
+                # Occasionally drift anchor slightly to a new local "norm" point
+                if pos_center is not None and random.random() < 0.03:
+                    self.qp_anchor_point = self.next_micro_point(prev_point=self.qp_anchor_point or pos2, center=pos_center, radius=pos_radius)
+            else:
+                # Keyboard fallback
+                self.rapid_press(quick_prayer_key)
+                time.sleep(gap)
+                self.rapid_press(quick_prayer_key)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] ✝️ Prayer flick (gap {int(gap*1000)} ms)")
+            return True
+        except Exception as e:
+            print(f"❌ pray_tick failed: {e}")
+            return False
     
     def capture_screen(self):
         """Capture current screen"""
@@ -284,7 +600,7 @@ class AutoActionFunctions:
             print(f"💡 Try taking a screenshot of just the {leveling_skill} skill icon and save as skills/images/{skill_lower}.png")
             return None
     
-    def checkstats(self, leveling_skill, method=None):
+    def checkstats(self, leveling_skill, method=None, interactive=True):
         """
         Open stats page and hover over the specified leveling skill
         
@@ -309,33 +625,36 @@ class AutoActionFunctions:
                 chosen_method = random.choice(['keybind', 'tab'])
             
             print(f"📊 Preparing to check stats for skill: {leveling_skill} using {chosen_method}")
-            print("⏸️  PAUSED - Click into your game screen and press 'p' to start the test")
             
-            # Start paused, wait for 'p' key
-            is_paused = True
-            
-            # Import keyboard listener
-            from pynput import keyboard
-            
-            def on_key_press(key):
-                nonlocal is_paused
-                try:
-                    if key.char == 'p':
-                        is_paused = False
-                        print("▶️  UNPAUSED - Starting checkstats action...")
-                        return False  # Stop listener
-                except AttributeError:
-                    pass
-            
-            # Start keyboard listener
-            listener = keyboard.Listener(on_press=on_key_press)
-            listener.start()
-            
-            # Wait for unpause
-            while is_paused:
-                time.sleep(0.1)
-            
-            listener.stop()
+            # Optional interactive pause gate (skipped when called from automation loops)
+            if interactive:
+                print("⏸️  PAUSED - Click into your game screen and press 'p' to start the test")
+                
+                # Start paused, wait for 'p' key
+                is_paused = True
+                
+                # Import keyboard listener
+                from pynput import keyboard
+                
+                def on_key_press(key):
+                    nonlocal is_paused
+                    try:
+                        if key.char == 'p':
+                            is_paused = False
+                            print("▶️  UNPAUSED - Starting checkstats action...")
+                            return False  # Stop listener
+                    except AttributeError:
+                        pass
+                
+                # Start keyboard listener
+                listener = keyboard.Listener(on_press=on_key_press)
+                listener.start()
+                
+                # Wait for unpause
+                while is_paused:
+                    time.sleep(0.1)
+                
+                listener.stop()
             
             # Step 1: Open stats using chosen method
             if chosen_method == 'keybind':
@@ -418,7 +737,7 @@ def get_auto_functions():
     return AutoActionFunctions()
 
 
-def checkstats(leveling_skill, method=None):
+def checkstats(leveling_skill, method=None, interactive=True):
     """
     Convenience function to check stats without creating class instance
     
@@ -430,7 +749,13 @@ def checkstats(leveling_skill, method=None):
         bool: True if successful, False otherwise
     """
     functions = get_auto_functions()
-    return functions.checkstats(leveling_skill, method)
+    return functions.checkstats(leveling_skill, method, interactive=interactive)
+
+
+def pray_tick(quick_prayer_key: str = 'f1', min_gap_ms: int = 40, max_gap_ms: int = 90):
+    """Convenience wrapper to perform a single prayer flick."""
+    functions = get_auto_functions()
+    return functions.pray_tick(quick_prayer_key=quick_prayer_key, min_gap_ms=min_gap_ms, max_gap_ms=max_gap_ms)
 
 
 if __name__ == "__main__":
