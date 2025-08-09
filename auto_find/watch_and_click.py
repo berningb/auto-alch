@@ -35,6 +35,21 @@ except Exception as e:
     AutoActionFunctions = None
     print(f"⚠️ Could not import AutoActionFunctions: {e}")
 
+# Template-based tick digit detection (sequence-driven)
+TICKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'auto_actions', 'ticks')
+sys.path.append(os.path.abspath(TICKS_DIR))
+try:
+    from tm_detect import (
+        load_all_templates,
+        classify_digit_from_frame,
+    )
+    TEMPLATES_DIR = os.path.join(TICKS_DIR, 'templates')
+    ALL_TEMPLATES = load_all_templates(TEMPLATES_DIR)
+    print(f"🧩 Loaded templates: all={ {k: len(v) for k,v in ALL_TEMPLATES.items()} }")
+except Exception as e:
+    ALL_TEMPLATES = {}
+    print(f"⚠️ Tick detector unavailable: {e}")
+
 # Pull HSV ranges from color_detection definitions to keep in sync
 CYAN_RANGE = CRAB_COLOR['hsv_range']       # crab
 MAGENTA_RANGE = TUNNEL_COLOR['hsv_range']  # tunnel
@@ -42,26 +57,44 @@ MAGENTA_RANGE = TUNNEL_COLOR['hsv_range']  # tunnel
 PAUSED = True
 STOP = False
 DEBUG = False
+ROTATE_ENABLED = False  # disable camera rotation during testing; toggle with 'r'
+FLICK_ON_AT_2_TO_1 = True  # True: ON at 2->1, OFF at 1->4. Toggle with 'o'
+SCALE_X = 1.0
+SCALE_Y = 1.0
+TUNNEL_STABLE_FRAMES = 2
+CRAB_STABLE_FRAMES = 1
+CRAB_MISS_FRAMES_TO_EXIT = 4  # inner loop: require N consecutive misses before leaving
 
 # Preferred skill to check during AFK (set based on current training)
 PRIMARY_SKILL = 'strength'
 
-# Quick-prayer flick configuration
-PRAY_TICK_ENABLED = True
-# Set to your client keybind for Quick-prayers toggle
-PRAY_QUICK_KEY = 'f1'  # used only if mouse template is unavailable
-# Gap between on/off toggles (milliseconds)
-PRAY_GAP_MIN_MS = 60
-PRAY_GAP_MAX_MS = 100
-# Additional timing tuned for OSRS tick (~600ms)
-PRAY_SETTLE_MS_MIN = 80
-PRAY_SETTLE_MS_MAX = 120
-PRAY_HOLD_MS_MIN = 70
+# Quick-prayer toggle config
+PRAY_TOGGLE_ENABLED = True
+PRAY_MIN_COOLDOWN_MS = 200  # legacy; not used in flick loop
+PRAY_SETTLE_MS_MIN = 70
+PRAY_SETTLE_MS_MAX = 110
+PRAY_HOLD_MS_MIN = 60
 PRAY_HOLD_MS_MAX = 100
+PRAY_MIN_CONF = 0.55
+
+# Match flick test timings by default
+USE_STATE_CHECK = False  # when True, verify orb state each frame (slower)
+FLICK_COOLDOWN_MS = 160
+FLICK_SETTLE_MIN = 50
+FLICK_SETTLE_MAX = 90
+FLICK_HOLD_MIN = 50
+FLICK_HOLD_MAX = 85
+FLICK_LOOP_SLEEP = 0.02
+
+# Region validation for tunnel (avoid huge/edge blobs)
+MAX_AREA_TUNNEL = 150000.0
+
+# Test/behavior flags
+RECLICK_CRAB_ENABLED = False  # disable periodic crab re-clicks during this flow
 
 
 def on_key_press(key):
-    global PAUSED, STOP, DEBUG
+    global PAUSED, STOP, DEBUG, ROTATE_ENABLED, FLICK_ON_AT_2_TO_1
     try:
         if key.char == 'p':
             PAUSED = not PAUSED
@@ -76,6 +109,13 @@ def on_key_press(key):
         elif key.char == 'd':
             DEBUG = not DEBUG
             print(f"🔎 DEBUG {'ON' if DEBUG else 'OFF'}")
+        elif key.char == 'r':
+            ROTATE_ENABLED = not ROTATE_ENABLED
+            print(f"🧭 Rotate {'ENABLED' if ROTATE_ENABLED else 'DISABLED'}")
+        elif key.char == 'o':
+            FLICK_ON_AT_2_TO_1 = not FLICK_ON_AT_2_TO_1
+            orient = "ON at 2→1, OFF at 1→4" if FLICK_ON_AT_2_TO_1 else "OFF at 2→1, ON at 1→4"
+            print(f"🔁 Flick orientation → {orient}")
     except AttributeError:
         pass
 
@@ -97,6 +137,20 @@ def find_largest_region(mask) -> Optional[Tuple[Tuple[int, int], float, Tuple[in
     return (cx, cy), area, (x, y, w, h)
 
 
+def is_valid_tunnel_region(frame_shape, region, min_area: float, max_area: float) -> bool:
+    if region is None:
+        return False
+    area = float(region[1])
+    x, y, w, h = region[2]
+    h_img, w_img = frame_shape[:2]
+    if area < min_area or area > max_area:
+        return False
+    # Reject contours touching edges (common for false positives)
+    if x <= 2 or y <= 2 or (x + w) >= (w_img - 2) or (y + h) >= (h_img - 2):
+        return False
+    return True
+
+
 def detect_color(hsv, range_tuple):
     lower_hsv, upper_hsv = range_tuple
     mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
@@ -107,7 +161,13 @@ def detect_color(hsv, range_tuple):
 
 
 def click_at(point: Tuple[int, int]):
-    x, y = point
+    global SCALE_X, SCALE_Y
+    sys_w, sys_h = pyautogui.size()
+    x = int(round(point[0] * SCALE_X))
+    y = int(round(point[1] * SCALE_Y))
+    # Clip to screen bounds to avoid off-screen moves
+    x = max(0, min(sys_w - 1, x))
+    y = max(0, min(sys_h - 1, y))
     pyautogui.moveTo(x, y, duration=0.2)
     time.sleep(0.02)
     pyautogui.click()
@@ -219,6 +279,23 @@ def main():
     # Optional auto actions for stats checking
     auto_funcs = AutoActionFunctions() if AutoActionFunctions is not None else None
 
+    # Establish coordinate scaling between screenshot frames and OS screen
+    try:
+        probe = capture_screen()
+        if probe is not None:
+            frame_h, frame_w = probe.shape[:2]
+            sys_w, sys_h = pyautogui.size()
+            # Avoid division by zero
+            if frame_w > 0 and frame_h > 0:
+                # Scale detected frame coordinates to OS coordinates
+                # Handles Windows DPI scaling / multi-monitor mismatch
+                globals()['SCALE_X'] = float(sys_w) / float(frame_w)
+                globals()['SCALE_Y'] = float(sys_h) / float(frame_h)
+                if DEBUG:
+                    print(f"🖥️ Scaling set: frame=({frame_w}x{frame_h}) screen=({sys_w}x{sys_h}) scale=({SCALE_X:.3f},{SCALE_Y:.3f})")
+    except Exception as e:
+        print(f"⚠️ Could not establish scaling: {e}")
+
     # One-click-per-appearance with debounce: click once, then require
     # a continuous absence period before re-arming another click
     crab_clicked = False
@@ -230,7 +307,7 @@ def main():
 
     # Minimum area to treat as a valid target (filter noise)
     min_area_crab = 2500.0
-    min_area_tunnel = 1500.0
+    min_area_tunnel = 2200.0
 
     last_debug_time = 0.0
 
@@ -268,6 +345,14 @@ def main():
 
             crab_visible = crab is not None and crab[1] >= min_area_crab
             tunnel_visible = tunnel is not None and tunnel[1] >= min_area_tunnel
+            # Stability counters to avoid flicker/false positives
+            if not hasattr(main, "_crab_stable"):
+                main._crab_stable = 0
+                main._tunnel_stable = 0
+            main._crab_stable = main._crab_stable + 1 if crab_visible else 0
+            main._tunnel_stable = main._tunnel_stable + 1 if tunnel_visible else 0
+            crab_ready = main._crab_stable >= CRAB_STABLE_FRAMES
+            tunnel_ready = main._tunnel_stable >= TUNNEL_STABLE_FRAMES
 
             # Debug info every ~0.5s
             now = time.time()
@@ -280,57 +365,155 @@ def main():
             # Debounced one-time click per continuous appearance
             now = time.time()
 
+            # Prefer tunnel first at top-level (fresh validate), regardless of crab
+            if tunnel_ready:
+                tunnel_last_seen = now
+                if not tunnel_clicked:
+                    fresh_frame = capture_screen()
+                    if fresh_frame is not None:
+                        fresh_hsv = cv2.cvtColor(fresh_frame, cv2.COLOR_BGR2HSV)
+                        tun_fresh = detect_color(fresh_hsv, MAGENTA_RANGE)
+                        if is_valid_tunnel_region(fresh_frame.shape, tun_fresh, min_area_tunnel, MAX_AREA_TUNNEL):
+                            (cx, cy), area, _ = tun_fresh
+                            print(f"🎯 Clicking tunnel at ({cx},{cy}) area={area:.0f}")
+                            click_at((cx, cy))
+                            tunnel_clicked = True
+                            # After clicking tunnel, start next iteration (look for crab next)
+                            time.sleep(0.08)
+                            continue
+                        else:
+                            if DEBUG:
+                                why = 'none'
+                                if tun_fresh is not None:
+                                    why = f"area={tun_fresh[1]:.0f}, bbox={tun_fresh[2]}"
+                                print(f"🔎 Tunnel invalid on refresh ({why}); skipping")
+
             # Update last-seen timestamps
-            if crab_visible:
+            if crab_ready:
                 crab_last_seen = now
                 if not crab_clicked:
-                    (cx, cy), area, _ = crab
-                    print(f"🎯 Clicking crab at ({cx},{cy}) area={area:.0f}")
-                    # Optional prayer flick right before engaging
-                    if PRAY_TICK_ENABLED and auto_funcs is not None:
+                    # Do not click crab if orange tick digits are visible (avoid interrupting flick)
+                    if ALL_TEMPLATES:
                         try:
-                            auto_funcs.pray_tick(
-                                quick_prayer_key=PRAY_QUICK_KEY,
-                                min_gap_ms=PRAY_GAP_MIN_MS,
-                                max_gap_ms=PRAY_GAP_MAX_MS,
-                                use_mouse=True,
-                                settle_ms_min=PRAY_SETTLE_MS_MIN,
-                                settle_ms_max=PRAY_SETTLE_MS_MAX,
-                                hold_on_ms_min=PRAY_HOLD_MS_MIN,
-                                hold_on_ms_max=PRAY_HOLD_MS_MAX,
-                                hold_off_ms_min=PRAY_HOLD_MS_MIN,
-                                hold_off_ms_max=PRAY_HOLD_MS_MAX,
-                            )
-                        except Exception as e:
-                            print(f"⚠️ pray_tick failed pre-click: {e}")
-                    click_at((cx, cy))
-                    crab_clicked = True
+                            digit0, score0 = classify_digit_from_frame(frame, ALL_TEMPLATES, scales=(0.7,0.85,1.0,1.15))
+                        except Exception:
+                            digit0, score0 = (None, 0.0)
+                        if digit0 is not None and score0 >= PRAY_MIN_CONF:
+                            if DEBUG:
+                                print(f"⏭️  Skip crab click: tick={digit0} score={score0:.2f}")
+                            # Defer clicking this iteration
+                            pass
+                        else:
+                            (cx, cy), area, _ = crab
+                            print(f"🎯 Clicking crab at ({cx},{cy}) area={area:.0f}")
+                            click_at((cx, cy))
+                            crab_clicked = True
+                    else:
+                        (cx, cy), area, _ = crab
+                        print(f"🎯 Clicking crab at ({cx},{cy}) area={area:.0f}")
+                        click_at((cx, cy))
+                        crab_clicked = True
+
+                    # Engage loop: while crab visible and tunnel not visible, auto flick
+                    if PRAY_TOGGLE_ENABLED and auto_funcs is not None and ALL_TEMPLATES:
+                        last_toggle_ms = 0.0
+                        print("🙏 Entering auto-prayer (ON at 2→1, OFF at 1→4)" if FLICK_ON_AT_2_TO_1 else "🙏 Entering auto-prayer (OFF at 2→1, ON at 1→4)")
+                        seq_last = None
+                        miss_frames = 0
+                        while True:
+                            if STOP or PAUSED:
+                                break
+                            frame2 = capture_screen()
+                            if frame2 is None:
+                                time.sleep(0.04)
+                                continue
+                            hsv2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2HSV)
+                            # Update visibility to know when to leave
+                            crab2 = detect_color(hsv2, CYAN_RANGE)
+                            crab_vis2 = crab2 is not None and crab2[1] >= min_area_crab
+                            # Require several consecutive misses before leaving
+                            if crab_vis2:
+                                miss_frames = 0
+                            else:
+                                miss_frames += 1
+                                if miss_frames >= CRAB_MISS_FRAMES_TO_EXIT:
+                                    break
+                            now_ms = time.time() * 1000.0
+                            # Transition-driven logic (robust): act on any 2->1 or 1->4 change
+                            digit, score = classify_digit_from_frame(frame2, ALL_TEMPLATES, scales=(0.7,0.85,1.0,1.15))
+                            if digit is not None and score >= PRAY_MIN_CONF and digit != seq_last:
+                                prev = seq_last
+                                seq_last = digit
+                                # Check current orb state (if template provided)
+                                state_on = False
+                                if USE_STATE_CHECK:
+                                    try:
+                                        state_on = auto_funcs.is_quick_prayer_on(frame2)
+                                    except Exception:
+                                        state_on = False
+                                if DEBUG:
+                                    print(f"tick={digit} score={score:.2f}{' state='+('ON' if state_on else 'off') if USE_STATE_CHECK else ''}")
+                                # Orientation switch (o): if FLICK_ON_AT_2_TO_1, ON at 2->1, OFF at 1->4; else reversed
+                                if FLICK_ON_AT_2_TO_1 and prev == 2 and digit == 1 and (not USE_STATE_CHECK or not state_on) and (now_ms - last_toggle_ms) >= FLICK_COOLDOWN_MS:
+                                    ok = auto_funcs.quick_prayer_toggle(
+                                        use_mouse=True,
+                                        settle_ms_min=FLICK_SETTLE_MIN,
+                                        settle_ms_max=FLICK_SETTLE_MAX,
+                                        hold_ms_min=FLICK_HOLD_MIN,
+                                        hold_ms_max=FLICK_HOLD_MAX,
+                                    )
+                                    if ok:
+                                        print("⚡ Toggle ON (2->1)")
+                                        last_toggle_ms = now_ms
+                                elif FLICK_ON_AT_2_TO_1 and prev == 1 and digit == 4 and (not USE_STATE_CHECK or state_on) and (now_ms - last_toggle_ms) >= FLICK_COOLDOWN_MS:
+                                    ok = auto_funcs.quick_prayer_toggle(
+                                        use_mouse=True,
+                                        settle_ms_min=FLICK_SETTLE_MIN,
+                                        settle_ms_max=FLICK_SETTLE_MAX,
+                                        hold_ms_min=FLICK_HOLD_MIN,
+                                        hold_ms_max=FLICK_HOLD_MAX,
+                                    )
+                                    if ok:
+                                        print("⚡ Toggle OFF (1->4)")
+                                        last_toggle_ms = now_ms
+                                elif (not FLICK_ON_AT_2_TO_1) and prev == 2 and digit == 1 and (not USE_STATE_CHECK or state_on) and (now_ms - last_toggle_ms) >= FLICK_COOLDOWN_MS:
+                                    ok = auto_funcs.quick_prayer_toggle(
+                                        use_mouse=True,
+                                        settle_ms_min=FLICK_SETTLE_MIN,
+                                        settle_ms_max=FLICK_SETTLE_MAX,
+                                        hold_ms_min=FLICK_HOLD_MIN,
+                                        hold_ms_max=FLICK_HOLD_MAX,
+                                    )
+                                    if ok:
+                                        print("⚡ Toggle OFF (2->1)")
+                                        last_toggle_ms = now_ms
+                                elif (not FLICK_ON_AT_2_TO_1) and prev == 1 and digit == 4 and (not USE_STATE_CHECK or not state_on) and (now_ms - last_toggle_ms) >= FLICK_COOLDOWN_MS:
+                                    ok = auto_funcs.quick_prayer_toggle(
+                                        use_mouse=True,
+                                        settle_ms_min=FLICK_SETTLE_MIN,
+                                        settle_ms_max=FLICK_SETTLE_MAX,
+                                        hold_ms_min=FLICK_HOLD_MIN,
+                                        hold_ms_max=FLICK_HOLD_MAX,
+                                    )
+                                    if ok:
+                                        print("⚡ Toggle ON (1->4)")
+                                        last_toggle_ms = now_ms
+                            time.sleep(FLICK_LOOP_SLEEP)
             else:
-                # Rearm only after sustained absence
+                # Rearm only after sustained absence; but do not auto re-click repeatedly
                 if crab_clicked and (now - crab_last_seen) >= rearm_absence_secs_crab:
                     crab_clicked = False
 
-            if tunnel_visible:
-                tunnel_last_seen = now
-                if not tunnel_clicked and not crab_visible:
-                    # Prefer crab over tunnel when both present; only click tunnel
-                    # if crab is not currently visible
-                    (cx, cy), area, _ = tunnel
-                    print(f"🎯 Clicking tunnel at ({cx},{cy}) area={area:.0f}")
-                    click_at((cx, cy))
-                    tunnel_clicked = True
-            else:
+            if not tunnel_ready:
                 if tunnel_clicked and (now - tunnel_last_seen) >= rearm_absence_secs_tunnel:
                     tunnel_clicked = False
 
-            # Reactive rotation: if neither target visible for a bit, rotate to reacquire
-            if not crab_visible and not tunnel_visible:
-                # If we've been blind for > 1.5s, try a gentle rotate; if > 4s, do a bigger rotate
+            # Reactive rotation: gated by ROTATE_ENABLED
+            if ROTATE_ENABLED and not crab_visible and not tunnel_visible:
                 blind_duration = min(now - max(crab_last_seen, tunnel_last_seen), 999)
                 if blind_duration > 4.0:
                     print("🔄 No targets seen for 4s — performing big rotate to search")
                     big_camera_rotate()
-                    # Reset last seen to avoid spamming
                     crab_last_seen = now
                     tunnel_last_seen = now
                 elif blind_duration > 1.5:
@@ -341,30 +524,11 @@ def main():
 
             # Periodic behaviors for AFK safety
             # 1) Re-click crab occasionally even if visible (to maintain aggro)
-            if now - last_forced_crab_click > forced_crab_interval:
+            if RECLICK_CRAB_ENABLED and (now - last_forced_crab_click > forced_crab_interval):
                 if crab_visible:
                     (cx, cy), area, _ = crab
                     print(f"🔁 Periodic re-click on crab at ({cx},{cy}) area={area:.0f}")
-                    # Prayer flick before periodic re-engage as well
-                    if PRAY_TICK_ENABLED and auto_funcs is not None:
-                        try:
-                            auto_funcs.pray_tick(
-                                quick_prayer_key=PRAY_QUICK_KEY,
-                                min_gap_ms=PRAY_GAP_MIN_MS,
-                                max_gap_ms=PRAY_GAP_MAX_MS,
-                                use_mouse=True,
-                                settle_ms_min=PRAY_SETTLE_MS_MIN,
-                                settle_ms_max=PRAY_SETTLE_MS_MAX,
-                                hold_on_ms_min=PRAY_HOLD_MS_MIN,
-                                hold_on_ms_max=PRAY_HOLD_MS_MAX,
-                                hold_off_ms_min=PRAY_HOLD_MS_MIN,
-                                hold_off_ms_max=PRAY_HOLD_MS_MAX,
-                            )
-                        except Exception as e:
-                            print(f"⚠️ pray_tick failed pre-reclick: {e}")
                     click_at((cx, cy))
-                else:
-                    print("🔁 Crab not visible for periodic click")
                 last_forced_crab_click = now
                 forced_crab_interval = random.uniform(28, 40)
 

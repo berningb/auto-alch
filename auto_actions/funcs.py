@@ -23,11 +23,13 @@ class AutoActionFunctions:
         self.skill_templates = {}  # Dictionary to store skill templates
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
         self.quick_prayer_template = None
+        self.prayer_toggled_template = None  # template that indicates quick-prayer is currently ON
         self.config_path = os.path.join(self.current_dir, "config.json")
         self.qp_center = None  # (x, y) absolute screen coords
         self.qp_radius = None  # float
         self.qp_last_point = None  # last in-orb click point for micro-movement continuity
         self.qp_anchor_point = None  # slowly drifting "norm" point within orb
+        self.qp_inner_margin = 20  # pixels to stay inside orb edge when clicking
         
         # Load templates on initialization
         self.load_templates()
@@ -96,6 +98,22 @@ class AutoActionFunctions:
                         break
             if self.quick_prayer_template is None:
                 print("ℹ️ Quick-prayer template not found (mouse flick optional)")
+
+            # Load 'prayer-toggled' state template (user-provided)
+            toggled_candidates = [
+                os.path.join(self.current_dir, "images", "prayer-toggled.png"),  # preferred location
+                os.path.join(os.path.dirname(self.current_dir), "prayer-toggled.png"),  # legacy
+                os.path.join(self.current_dir, "prayer-toggled.png"),  # legacy
+                os.path.join(self.current_dir, "ticks", "prayer-toggled.png"),  # legacy
+            ]
+            for pt in toggled_candidates:
+                if os.path.exists(pt):
+                    self.prayer_toggled_template = cv2.imread(pt)
+                    if self.prayer_toggled_template is not None:
+                        print(f"✅ Loaded prayer-toggled template from {pt}")
+                        break
+            if self.prayer_toggled_template is None:
+                print("ℹ️ Prayer-toggled template not found (optional state check)")
                 
         except Exception as e:
             print(f"Error loading templates: {e}")
@@ -174,13 +192,14 @@ class AutoActionFunctions:
         print(f"📏 Computed Quick-prayer radius ≈ {self.qp_radius:.1f} pixels")
         self._save_config()
 
-    def get_quick_prayer_click_point(self):
+    def get_quick_prayer_click_point(self, inner_margin_px: int | None = None):
         if not self.qp_center:
             return None
         cx, cy = self.qp_center
         # Click slightly within the radius; if radius unknown, small jitter
         r = self.qp_radius if self.qp_radius else 10.0
-        r = max(6.0, min(r - 3.0, 20.0))
+        margin = inner_margin_px if inner_margin_px is not None else self.qp_inner_margin
+        r = max(6.0, r - float(max(0, margin)))
         angle = random.uniform(0, 2 * np.pi)
         # Use sqrt for uniform area distribution within circle
         dist = r * (random.random() ** 0.5)
@@ -188,19 +207,20 @@ class AutoActionFunctions:
         jitter_y = int(dist * np.sin(angle))
         return (cx + jitter_x, cy + jitter_y)
 
-    def random_point_in_orb(self, center=None, radius=None):
+    def random_point_in_orb(self, center=None, radius=None, inner_margin_px: int | None = None):
         base_center = center if center is not None else self.qp_center
         base_radius = radius if radius is not None else self.qp_radius
         if base_center is None:
             return None
         cx, cy = base_center
         r = base_radius if base_radius else 10.0
-        r = max(6.0, min(r - 3.0, 20.0))
+        margin = inner_margin_px if inner_margin_px is not None else self.qp_inner_margin
+        r = max(6.0, r - float(max(0, margin)))
         angle = random.uniform(0, 2 * np.pi)
         dist = r * (random.random() ** 0.5)
         return (int(cx + dist * np.cos(angle)), int(cy + dist * np.sin(angle)))
 
-    def step_point_in_orb(self, prev_point=None, center=None, radius=None, min_step: int = 2, max_step: int = 6):
+    def step_point_in_orb(self, prev_point=None, center=None, radius=None, min_step: int = 2, max_step: int = 6, inner_margin_px: int | None = None):
         """Take a small step from the previous point within the orb bounds for natural micro movement."""
         base_center = center if center is not None else self.qp_center
         base_radius = radius if radius is not None else self.qp_radius
@@ -215,9 +235,10 @@ class AutoActionFunctions:
         angle = random.uniform(0, 2 * np.pi)
         nx = px + int(step * np.cos(angle))
         ny = py + int(step * np.sin(angle))
-        # Clamp to orb interior (shrink by 3px margin)
+        # Clamp to orb interior using configured inner margin
         r = base_radius if base_radius else 10.0
-        r_eff = max(6.0, r - 3.0)
+        margin = inner_margin_px if inner_margin_px is not None else self.qp_inner_margin
+        r_eff = max(6.0, r - float(max(0, margin)))
         # If outside, project back onto circle
         dx = nx - cx
         dy = ny - cy
@@ -231,13 +252,13 @@ class AutoActionFunctions:
                 ny = int(cy + dy * scale)
         return (nx, ny)
 
-    def next_micro_point(self, prev_point=None, center=None, radius=None):
+    def next_micro_point(self, prev_point=None, center=None, radius=None, inner_margin_px: int | None = None):
         """Choose the next in-orb point using human profile: ~90% 1–3 px, ~10% 4–6 px steps."""
         # Primary small steps
         if random.random() < 0.9:
-            return self.step_point_in_orb(prev_point=prev_point, center=center, radius=radius, min_step=1, max_step=3)
+            return self.step_point_in_orb(prev_point=prev_point, center=center, radius=radius, min_step=1, max_step=3, inner_margin_px=inner_margin_px)
         # Occasional slightly larger correction
-        return self.step_point_in_orb(prev_point=prev_point, center=center, radius=radius, min_step=4, max_step=6)
+        return self.step_point_in_orb(prev_point=prev_point, center=center, radius=radius, min_step=4, max_step=6, inner_margin_px=inner_margin_px)
 
     # --- Humanized quick movement for near-instant but realistic motion ---
     def human_quick_move(self, target_x: int, target_y: int):
@@ -292,6 +313,7 @@ class AutoActionFunctions:
         min_gap_ms: int = 40,
         max_gap_ms: int = 90,
         use_mouse: bool = True,
+        inner_margin_px: int = 20,
         settle_ms_min: int = 60,
         settle_ms_max: int = 110,
         hold_on_ms_min: int = 60,
@@ -322,13 +344,13 @@ class AutoActionFunctions:
                 base = self.qp_last_point or self.qp_anchor_point
                 if base is None and pos_center is not None:
                     # Initialize anchor near center
-                    self.qp_anchor_point = self.random_point_in_orb(center=pos_center, radius=pos_radius)
+                    self.qp_anchor_point = self.random_point_in_orb(center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
                     base = self.qp_anchor_point
                 # Small step from base; if no base, fall back to a random in-orb point
                 if base is not None:
-                    pos = self.next_micro_point(prev_point=base, center=pos_center, radius=pos_radius)
+                    pos = self.next_micro_point(prev_point=base, center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
                 else:
-                    pos = self.random_point_in_orb(center=pos_center, radius=pos_radius)
+                    pos = self.random_point_in_orb(center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
                 if pos is None:
                     # Color-based locate first
                     try:
@@ -342,7 +364,12 @@ class AutoActionFunctions:
                     if qp_pos:
                         # Small jitter around template center
                         cx, cy = qp_pos
-                        pos = (cx + random.randint(-4, 4), cy + random.randint(-4, 4))
+                        if pos_center is not None and pos_radius is not None:
+                            # Recompute inside-margin point based on calibrated center/radius
+                            pos = self.random_point_in_orb(center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
+                        else:
+                            # Fallback tight jitter near template center
+                            pos = (cx + random.randint(-3, 3), cy + random.randint(-3, 3))
                 if pos is None:
                     print("⚠️ Quick-prayer icon not located")
                     return False
@@ -362,7 +389,7 @@ class AutoActionFunctions:
                 time.sleep(gap)
                 # Slightly different nearby point within the orb for OFF (micro step)
                 if pos_center is not None:
-                    pos2 = self.next_micro_point(prev_point=pos, center=pos_center, radius=pos_radius)
+                    pos2 = self.next_micro_point(prev_point=pos, center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
                 else:
                     pos2 = (pos[0] + random.randint(-2, 2), pos[1] + random.randint(-2, 2))
                 # Minimal micro-move to emulate human adjustment
@@ -423,6 +450,21 @@ class AutoActionFunctions:
         except Exception as e:
             print(f"Error in template matching: {e}")
             return None, 0
+
+    def is_quick_prayer_on(self, screen, threshold: float = 0.6) -> bool:
+        """Return True if the 'prayer-toggled' UI state is visible on screen.
+
+        Requires user to provide a template image 'prayer-toggled.png'.
+        """
+        try:
+            if self.prayer_toggled_template is None:
+                return False
+            pos, conf = self.find_template(screen, self.prayer_toggled_template, threshold=threshold)
+            if pos is None:
+                return False
+            return conf >= threshold
+        except Exception:
+            return False
     
     def add_click_variation(self, position):
         """Add random variation to click position for human-like behavior"""
@@ -728,6 +770,118 @@ class AutoActionFunctions:
             
         except Exception as e:
             print(f"❌ Error in checkstats: {e}")
+            return False
+
+    def quick_prayer_toggle(
+        self,
+        use_mouse: bool = True,
+        inner_margin_px: int = 20,
+        settle_ms_min: int = 60,
+        settle_ms_max: int = 110,
+        hold_ms_min: int = 60,
+        hold_ms_max: int = 100,
+    ) -> bool:
+        """Toggle Quick-prayer ON or OFF exactly once.
+
+        If use_mouse is True, locate the orb (using calibration/color/template) and click once
+        with human-like motion/timing.
+        """
+        try:
+            hold_ms = random.randint(max(1, hold_ms_min), max(hold_ms_min, hold_ms_max))
+            settle = random.uniform(max(0.0, settle_ms_min) / 1000.0, max(settle_ms_min, settle_ms_max) / 1000.0)
+            if use_mouse:
+                screen = self.capture_screen()
+                if screen is None:
+                    return False
+                pos_center = self.qp_center
+                pos_radius = self.qp_radius
+                base = self.qp_last_point or self.qp_anchor_point
+                if base is None and pos_center is not None:
+                    self.qp_anchor_point = self.random_point_in_orb(center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
+                    base = self.qp_anchor_point
+                if base is not None:
+                    pos = self.next_micro_point(prev_point=base, center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
+                else:
+                    pos = self.random_point_in_orb(center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
+                if pos is None:
+                    try:
+                        detected_center = self.find_quick_prayer_orb(screen)
+                        pos = detected_center
+                    except Exception:
+                        pos = None
+                if pos is None and self.quick_prayer_template is not None:
+                    qp_pos, qp_conf = self.find_template(screen, self.quick_prayer_template, threshold=0.65)
+                    if qp_pos:
+                        cx, cy = qp_pos
+                        if pos_center is not None and pos_radius is not None:
+                            pos = self.random_point_in_orb(center=pos_center, radius=pos_radius, inner_margin_px=inner_margin_px)
+                        else:
+                            pos = (cx + random.randint(-3, 3), cy + random.randint(-3, 3))
+                if pos is None:
+                    print("⚠️ Quick-prayer icon not located")
+                    return False
+                original_pause = pyautogui.PAUSE
+                pyautogui.PAUSE = 0
+                cur_x, cur_y = pyautogui.position()
+                if ((pos[0]-cur_x)**2 + (pos[1]-cur_y)**2) ** 0.5 <= 12:
+                    self.human_micro_move(pos[0], pos[1])
+                else:
+                    self.human_quick_move(pos[0], pos[1])
+                time.sleep(settle)
+                self.human_click_hold(pos[0], pos[1], hold_ms=hold_ms)
+                pyautogui.PAUSE = original_pause
+                self.qp_last_point = pos
+            else:
+                # Keyboard fallback (assumes bound hotkey)
+                self.rapid_press('f1')
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] ✝️ Quick-prayer toggle (hold {hold_ms} ms)")
+            return True
+        except Exception as e:
+            print(f"❌ quick_prayer_toggle failed: {e}")
+            return False
+
+    def ensure_quick_prayer_state(
+        self,
+        target_on: bool,
+        attempts: int = 2,
+        verify_delay_ms: int = 70,
+        settle_ms_min: int = 60,
+        settle_ms_max: int = 110,
+        hold_ms_min: int = 60,
+        hold_ms_max: int = 100,
+    ) -> bool:
+        """Ensure the quick prayer orb matches target_on by verifying after clicks.
+
+        Tries up to `attempts` single toggles, checking state after each.
+        Returns True if the desired state is reached; False otherwise.
+        """
+        try:
+            screen = self.capture_screen()
+            if screen is None:
+                return False
+            current = self.is_quick_prayer_on(screen)
+            if current == target_on:
+                return True
+            for _ in range(max(1, attempts)):
+                ok = self.quick_prayer_toggle(
+                    use_mouse=True,
+                    settle_ms_min=settle_ms_min,
+                    settle_ms_max=settle_ms_max,
+                    hold_ms_min=hold_ms_min,
+                    hold_ms_max=hold_ms_max,
+                )
+                if not ok:
+                    continue
+                time.sleep(max(0.01, verify_delay_ms / 1000.0))
+                screen = self.capture_screen()
+                if screen is None:
+                    continue
+                current = self.is_quick_prayer_on(screen)
+                if current == target_on:
+                    return True
+            return False
+        except Exception:
             return False
 
 
