@@ -63,29 +63,24 @@ def test_alch_detection():
     return location
 
 def test_dart_detection():
-    """Test dart detection"""
+    """Test dart detection (color-first with ROI template confirmation)"""
     print("\n🎯 Testing Darts")
     print("-" * 40)
     
-    # Try dart templates (look in images/ first)
+    # Load dart templates dynamically (any dart*.png)
     templates = {}
-    dart_path_candidates = [
-        os.path.join(images_dir, "dart.png"),
-        os.path.join(os.path.dirname(__file__), "dart.png"),
-    ]
-    dart_path = next((p for p in dart_path_candidates if os.path.exists(p)), dart_path_candidates[0])
-    if os.path.exists(dart_path):
-        templates["dart.png"] = cv2.imread(dart_path)
-        print("✅ Loaded dart.png")
-    
-    dart2_path_candidates = [
-        os.path.join(images_dir, "dart2.png"),
-        os.path.join(os.path.dirname(__file__), "dart2.png"),
-    ]
-    dart2_path = next((p for p in dart2_path_candidates if os.path.exists(p)), dart2_path_candidates[0])
-    if os.path.exists(dart2_path):
-        templates["dart2.png"] = cv2.imread(dart2_path)
-        print("✅ Loaded dart2.png")
+    current_dir = os.path.dirname(__file__)
+    for dir_path in [os.path.join(os.path.dirname(__file__), "images"), current_dir]:
+        if not os.path.isdir(dir_path):
+            continue
+        for fname in sorted(os.listdir(dir_path)):
+            if fname.lower().startswith("dart") and fname.lower().endswith(".png"):
+                full = os.path.join(dir_path, fname)
+                if os.path.exists(full):
+                    img = cv2.imread(full)
+                    if img is not None:
+                        templates[fname] = img
+                        print(f"✅ Loaded {fname}")
     
     if not templates:
         print("❌ No dart templates found!")
@@ -95,38 +90,74 @@ def test_dart_detection():
     screenshot = pyautogui.screenshot()
     screen = np.array(screenshot)
     screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
-    
-    best_confidence = 0
-    best_location = None
-    best_template = None
-    
-    for template_name, template in templates.items():
-        print(f"\nTesting {template_name}:")
-        
-        # Convert to grayscale
-        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-        
-        # Template matching
-        result = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
-        print(f"Match confidence: {max_val:.3f}")
-        
-        if max_val > best_confidence:
-            best_confidence = max_val
-            h, w = template_gray.shape
-            center_x = max_loc[0] + w // 2
-            center_y = max_loc[1] + h // 2
-            best_location = (center_x, center_y)
-            best_template = template_name
-    
-    if best_location:
-        print(f"\n✨ Best result: {best_template}")
-        print(f"Location: ({best_location[0]}, {best_location[1]})")
-        print(f"Confidence: {best_confidence:.3f}")
-    
-    return best_location
+
+    # Color-first search for blue region
+    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+    lower = np.array([100, 120, 120])
+    upper = np.array([130, 255, 255])
+    mask = cv2.inRange(hsv, lower, upper)
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("No blue regions found")
+        return None
+
+    h_img, w_img = screen.shape[:2]
+    min_area, max_area, edge_margin = 800.0, 150000.0, 2
+    best = None
+    best_area = 0
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < min_area or area > max_area:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        if x <= edge_margin or y <= edge_margin or (x + w) >= (w_img - edge_margin) or (y + h) >= (h_img - edge_margin):
+            continue
+        if area > best_area:
+            best_area = area
+            best = (x, y, w, h)
+
+    if best is None:
+        print("No valid ROI from blue regions")
+        return None
+
+    x, y, w, h = best
+    pad = 8
+    x1, y1 = max(0, x - pad), max(0, y - pad)
+    x2, y2 = min(w_img, x + w + pad), min(h_img, y + h + pad)
+    roi = screen[y1:y2, x1:x2]
+
+    # Confirm within ROI using available templates
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    best_conf, best_loc, best_name = 0.0, None, None
+    for name, tmpl in templates.items():
+        tmpl_gray = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
+        res = cv2.matchTemplate(roi_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if max_val > best_conf:
+            th, tw = tmpl_gray.shape
+            best_conf = float(max_val)
+            best_loc = (x1 + max_loc[0] + tw // 2, y1 + max_loc[1] + th // 2)
+            best_name = name
+
+    if best_loc:
+        print(f"Confirmed by template '{best_name}' at {best_loc} (conf {best_conf:.3f})")
+        try:
+            pyautogui.moveTo(best_loc[0], best_loc[1], duration=0.15)
+        except Exception:
+            pass
+        return best_loc
+    else:
+        center = (x + w // 2, y + h // 2)
+        print(f"Using color-only center {center}")
+        try:
+            pyautogui.moveTo(center[0], center[1], duration=0.15)
+        except Exception:
+            pass
+        return center
 
 def main():
     """Main function"""
@@ -140,10 +171,29 @@ def main():
     print("\nPress Ctrl+C to stop")
     print("=" * 40)
     
+    # Determine scaling (image pixels vs OS coordinates)
+    try:
+        sw, sh = pyautogui.size()
+        shot = pyautogui.screenshot()
+        arr = np.array(shot)
+        ih, iw = arr.shape[:2]
+        scale_x = max(1e-6, iw / float(sw))
+        scale_y = max(1e-6, ih / float(sh))
+    except Exception:
+        scale_x = scale_y = 1.0
+    
     try:
         while True:
             alch_loc = test_alch_detection()
             dart_loc = test_dart_detection()
+            # If we got a location, hover using scaled coordinates for verification
+            if dart_loc:
+                try:
+                    sx = int(round(dart_loc[0] / max(1e-6, scale_x)))
+                    sy = int(round(dart_loc[1] / max(1e-6, scale_y)))
+                    pyautogui.moveTo(sx, sy, duration=0.15)
+                except Exception:
+                    pass
             
             print("\n" + "=" * 40)
             time.sleep(2)  # Wait 2 seconds before next scan

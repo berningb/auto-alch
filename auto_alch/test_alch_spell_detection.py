@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test Alch Spell Detection - Testing both templates
+Test Alch Spell Detection - Full-screen template-only multiscale over all alc-spell*.png; clicks spell when found
 """
 
 import cv2
@@ -8,150 +8,131 @@ import numpy as np
 import pyautogui
 import time
 import os
+from datetime import datetime
 
-def press_key(key):
-    """Press a key with human-like timing"""
-    print(f"\n⌨️  Pressing '{key}' to open spellbook...")
-    time.sleep(0.2)
-    pyautogui.press(key)
-    time.sleep(1.0)  # Wait longer for spellbook to open
 
-def find_alch_spell(screen, template, template_name):
-    """Find alch spell with a specific template"""
-    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-    
-    result = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-    
-    print(f"\nTesting {template_name}:")
-    print(f"Match confidence: {max_val:.3f}")
-    
-    if max_val >= 0.5:  # Using lower threshold for reporting
-        h, w = template_gray.shape
-        center_x = max_loc[0] + w // 2
-        center_y = max_loc[1] + h // 2
-        return (center_x, center_y), max_val
-    
-    return None, max_val
+def load_alch_templates():
+    templates = {}
+    base = os.path.dirname(__file__)
+    images_dir = os.path.join(base, "images")
+    for dir_path in [images_dir, base]:
+        if not os.path.isdir(dir_path):
+            continue
+        for fname in sorted(os.listdir(dir_path)):
+            lower = fname.lower()
+            if not lower.startswith("alc-spell") or not lower.endswith(".png"):
+                continue
+            path = os.path.join(dir_path, fname)
+            if not os.path.exists(path):
+                continue
+            img = cv2.imread(path)
+            if img is None:
+                continue
+            templates[fname] = (img, path)
+            mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"✅ Loaded {fname} from {path} (modified {mtime})")
+    return templates
+
+
+def multiscale_match(screen_bgr, template_bgr, scales=None):
+    if template_bgr is None:
+        return None, 0.0
+    if scales is None:
+        scales = [0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20]
+    screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+    best_pos, best_conf = None, 0.0
+    for s in scales:
+        try:
+            h0, w0 = template_bgr.shape[:2]
+            new_w = max(2, int(round(w0 * s)))
+            new_h = max(2, int(round(h0 * s)))
+            if new_w < 2 or new_h < 2:
+                continue
+            resized = cv2.resize(template_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC)
+            tmpl_gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+            res = cv2.matchTemplate(screen_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            if max_val > best_conf:
+                th, tw = tmpl_gray.shape
+                best_conf = float(max_val)
+                best_pos = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+        except Exception:
+            continue
+    return best_pos, best_conf
+
+
+def click_at(pos, scale_x=1.0, scale_y=1.0):
+    try:
+        sx = int(round(pos[0] / max(1e-6, scale_x)))
+        sy = int(round(pos[1] / max(1e-6, scale_y)))
+        pyautogui.moveTo(sx, sy, duration=0.12)
+        time.sleep(0.05)
+        pyautogui.click(sx, sy)
+    except Exception:
+        pass
+
 
 def test_alch_detection():
-    """Test alch spell detection with both templates"""
-    print("\n🔮 Testing Alch Spell")
+    print("\n🔮 Testing Alch Spell (TM multiscale over all templates)")
     print("-" * 40)
-    
-    # Load alch spell templates
-    templates = {}
-    
-    images_dir = os.path.join(os.path.dirname(__file__), "images")
-    alch_path_candidates = [
-        os.path.join(images_dir, "alc-spell.png"),
-        os.path.join(os.path.dirname(__file__), "alc-spell.png"),
-    ]
-    alch_path = next((p for p in alch_path_candidates if os.path.exists(p)), alch_path_candidates[0])
-    if os.path.exists(alch_path):
-        templates["alc-spell.png"] = cv2.imread(alch_path)
-        print("✅ Loaded alc-spell.png")
-    
-    alch2_path_candidates = [
-        os.path.join(images_dir, "alc-spell2.png"),
-        os.path.join(os.path.dirname(__file__), "alc-spell2.png"),
-    ]
-    alch2_path = next((p for p in alch2_path_candidates if os.path.exists(p)), alch2_path_candidates[0])
-    if os.path.exists(alch2_path):
-        templates["alc-spell2.png"] = cv2.imread(alch2_path)
-        print("✅ Loaded alc-spell2.png")
-    
-    # New: third template
-    alch3_path_candidates = [
-        os.path.join(images_dir, "alc-spell3.png"),
-        os.path.join(os.path.dirname(__file__), "alc-spell3.png"),
-    ]
-    alch3_path = next((p for p in alch3_path_candidates if os.path.exists(p)), alch3_path_candidates[0])
-    if os.path.exists(alch3_path):
-        templates["alc-spell3.png"] = cv2.imread(alch3_path)
-        print("✅ Loaded alc-spell3.png")
-    
+
+    templates = load_alch_templates()
     if not templates:
         print("❌ No alch spell templates found!")
         return None
-    
-    # First try without pressing '3'
-    print("\n1️⃣ Checking if spell is already visible:")
-    screenshot = pyautogui.screenshot()
-    screen = np.array(screenshot)
-    screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
-    
-    # Try both templates
-    best_confidence = 0
-    best_location = None
-    best_template = None
-    
-    for template_name, template in templates.items():
-        location, confidence = find_alch_spell(screen, template, template_name)
-        if confidence > best_confidence:
-            best_confidence = confidence
-            best_location = location
-            best_template = template_name
-    
-    print(f"\nBest initial result: {best_template if best_template else 'None'}")
-    print(f"Best confidence: {best_confidence:.3f}")
-    
-    # If confidence is too low, press '3' and check again
-    if best_confidence < 0.7:  # Using a higher threshold to be more strict
-        print("❌ Spell not found - spellbook might be closed")
-        press_key('3')
-        
-        # Check again after pressing '3'
-        print("\n2️⃣ Checking after pressing '3':")
+
+    # Determine scaling (image vs OS coordinates)
+    try:
+        sw, sh = pyautogui.size()
+        shot = pyautogui.screenshot()
+        arr = np.array(shot)
+        ih, iw = arr.shape[:2]
+        scale_x = max(1e-6, iw / float(sw))
+        scale_y = max(1e-6, ih / float(sh))
+    except Exception:
+        scale_x = scale_y = 1.0
+
+    def detect_once():
         screenshot = pyautogui.screenshot()
         screen = np.array(screenshot)
         screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
-        
-        # Try both templates again
-        best_confidence = 0
-        best_location = None
-        best_template = None
-        
-        for template_name, template in templates.items():
-            location, confidence = find_alch_spell(screen, template, template_name)
-            if confidence > best_confidence:
-                best_confidence = confidence
-                best_location = location
-                best_template = template_name
-        
-        print(f"\nBest result after '3': {best_template if best_template else 'None'}")
-        print(f"Best confidence: {best_confidence:.3f}")
-    
-    # Report final results
-    if best_confidence >= 0.7:
-        print(f"\n✅ Found spell using {best_template}")
-        print(f"Location: {best_location}")
-        print(f"Confidence: {best_confidence:.3f}")
-        return best_location
+        best_name, best_conf, best_pos = None, 0.0, None
+        for name, (tmpl, path) in templates.items():
+            pos, conf = multiscale_match(screen, tmpl)
+            print(f"   {name} TM confidence: {conf:.3f}")
+            if conf > best_conf and pos is not None:
+                best_name, best_conf, best_pos = name, conf, pos
+        if best_name:
+            print(f"   🔮 Best match {best_name} via TM at {best_pos} (conf {best_conf:.3f})")
+        else:
+            print("   ❌ No match found on screen")
+        return best_pos, best_conf
+
+    # First attempt
+    pos, conf = detect_once()
+    if pos is None or conf < 0.68:
+        print("❌ Not confidently found; pressing '3' to open spellbook")
+        time.sleep(0.2)
+        pyautogui.press('3')
+        time.sleep(0.7)
+        pos, conf = detect_once()
+
+    if pos is not None and conf >= 0.68:
+        print(f"✅ Clicking alch at {pos} (TM {conf:.3f})")
+        click_at(pos, scale_x, scale_y)
+        return pos
     else:
-        print(f"\n❌ Couldn't find spell with either template")
-        print(f"Best confidence was only {best_confidence:.3f}")
+        print("❌ Could not confidently locate alch spell")
         return None
 
-def main():
-    """Main function"""
-    print("🔍 Alch Spell Detection Test")
-    print("=" * 40)
-    print("Testing High Alchemy spell detection")
-    print("Using alc-spell.png, alc-spell2.png, and alc-spell3.png if present")
-    print("Will press '3' if spell is not found")
-    print("\nPress Ctrl+C to stop")
-    print("=" * 40)
-    
+
+if __name__ == "__main__":
+    print("Starting Alch Spell Detection Test...")
+    print("Press Ctrl+C to stop")
     try:
         while True:
             test_alch_detection()
             print("\n" + "=" * 40)
-            time.sleep(2)  # Wait 2 seconds before next scan
-            
+            time.sleep(2)
     except KeyboardInterrupt:
         print("\n🛑 Stopping test...")
-
-if __name__ == "__main__":
-    main()
