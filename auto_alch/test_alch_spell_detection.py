@@ -40,18 +40,37 @@ def test_alch_detection():
     print("\n🔮 Testing Alch Spell")
     print("-" * 40)
     
-    # Load both templates
+    # Load alch spell templates
     templates = {}
     
-    alch_path = os.path.join(os.path.dirname(__file__), "alc-spell.png")
+    images_dir = os.path.join(os.path.dirname(__file__), "images")
+    alch_path_candidates = [
+        os.path.join(images_dir, "alc-spell.png"),
+        os.path.join(os.path.dirname(__file__), "alc-spell.png"),
+    ]
+    alch_path = next((p for p in alch_path_candidates if os.path.exists(p)), alch_path_candidates[0])
     if os.path.exists(alch_path):
         templates["alc-spell.png"] = cv2.imread(alch_path)
         print("✅ Loaded alc-spell.png")
     
-    alch2_path = os.path.join(os.path.dirname(__file__), "alc-spell2.png")
+    alch2_path_candidates = [
+        os.path.join(images_dir, "alc-spell2.png"),
+        os.path.join(os.path.dirname(__file__), "alc-spell2.png"),
+    ]
+    alch2_path = next((p for p in alch2_path_candidates if os.path.exists(p)), alch2_path_candidates[0])
     if os.path.exists(alch2_path):
         templates["alc-spell2.png"] = cv2.imread(alch2_path)
         print("✅ Loaded alc-spell2.png")
+    
+    # New: third template
+    alch3_path_candidates = [
+        os.path.join(images_dir, "alc-spell3.png"),
+        os.path.join(os.path.dirname(__file__), "alc-spell3.png"),
+    ]
+    alch3_path = next((p for p in alch3_path_candidates if os.path.exists(p)), alch3_path_candidates[0])
+    if os.path.exists(alch3_path):
+        templates["alc-spell3.png"] = cv2.imread(alch3_path)
+        print("✅ Loaded alc-spell3.png")
     
     if not templates:
         print("❌ No alch spell templates found!")
@@ -120,7 +139,7 @@ def main():
     print("🔍 Alch Spell Detection Test")
     print("=" * 40)
     print("Testing High Alchemy spell detection")
-    print("Using both alc-spell.png and alc-spell2.png")
+    print("Using alc-spell.png, alc-spell2.png, and alc-spell3.png if present")
     print("Will press '3' if spell is not found")
     print("\nPress Ctrl+C to stop")
     print("=" * 40)

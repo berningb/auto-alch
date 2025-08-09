@@ -23,7 +23,7 @@ class SimpleAutoAlch:
         self.dart_template = None
         self.click_count = 0
         self.is_running = False
-        self.is_paused = False
+        self.is_paused = True
         
         # Humanization settings
         self.session_start_time = time.time()
@@ -42,17 +42,56 @@ class SimpleAutoAlch:
         # Keyboard listener for pause functionality
         self.keyboard_listener = None
         
+        # Color-based detection settings (blue darts)
+        # HSV bounds tuned for bright blue items; adjust if needed
+        self.blue_hsv_lower = np.array([100, 120, 120])
+        self.blue_hsv_upper = np.array([130, 255, 255])
+        # Area constraints to filter noise (in pixels)
+        self.min_area_dart = 800.0
+        self.max_area_dart = 150000.0
+        # Reject regions touching image edges
+        self.edge_margin = 2
+
+        # Tab hotkeys (adjust to match your client settings)
+        self.key_inventory = '0'     # Inventory tab
+        self.key_equipment = '5'     # Worn equipment tab
+        self.key_spellbook = '3'     # Spellbook tab
+
+        # Flow control: ensure we only click darts right after alch
+        self.alch_armed = False
+
+        # Logging and metrics
+        self.debug = False  # Set True to log all steps
+        self.messed_up_count = 0  # Times we had to recover (inventory/equipment)
+        self.total_break_time = 0.0  # Seconds spent in breaks
+        
     def load_templates(self):
         """Load the template images"""
         try:
             # Load alch spell templates
             self.alch_spell_template = None
             self.alch_spell_template2 = None
+            self.alch_spell_template3 = None
             
-            # Get absolute paths
+            # Get absolute paths (prefer images/ subdirectory, fallback to current dir)
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            alch_path = os.path.join(current_dir, "alc-spell.png")
-            alch2_path = os.path.join(current_dir, "alc-spell2.png")
+            images_dir = os.path.join(current_dir, "images")
+            alch_path_candidates = [
+                os.path.join(images_dir, "alc-spell.png"),
+                os.path.join(current_dir, "alc-spell.png"),
+            ]
+            alch2_path_candidates = [
+                os.path.join(images_dir, "alc-spell2.png"),
+                os.path.join(current_dir, "alc-spell2.png"),
+            ]
+            alch3_path_candidates = [
+                os.path.join(images_dir, "alc-spell3.png"),
+                os.path.join(current_dir, "alc-spell3.png"),
+            ]
+            # Resolve first existing candidate
+            alch_path = next((p for p in alch_path_candidates if os.path.exists(p)), alch_path_candidates[0])
+            alch2_path = next((p for p in alch2_path_candidates if os.path.exists(p)), alch2_path_candidates[0])
+            alch3_path = next((p for p in alch3_path_candidates if os.path.exists(p)), alch3_path_candidates[0])
             
             print(f"Looking for alch templates in: {current_dir}")
             print(f"Full path 1: {alch_path}")
@@ -70,8 +109,14 @@ class SimpleAutoAlch:
             else:
                 print(f"❌ Could not find {alch2_path}")
             
-            if self.alch_spell_template is None and self.alch_spell_template2 is None:
-                print("❌ No alch spell templates found. Please create alc-spell.png or alc-spell2.png")
+            if os.path.exists(alch3_path):
+                self.alch_spell_template3 = cv2.imread(alch3_path)
+                print("✅ Loaded alch spell template 3 (alc-spell3.png)")
+            else:
+                print(f"❌ Could not find {alch3_path}")
+            
+            if self.alch_spell_template is None and self.alch_spell_template2 is None and self.alch_spell_template3 is None:
+                print("❌ No alch spell templates found. Please create alc-spell.png, alc-spell2.png, or alc-spell3.png")
                 return False
             
             # Load dart templates
@@ -79,21 +124,33 @@ class SimpleAutoAlch:
             self.dart_template2 = None
             self.dart_template3 = None
             
-            dart_path = os.path.join(current_dir, "dart.png")
+            dart_path_candidates = [
+                os.path.join(images_dir, "dart.png"),
+                os.path.join(current_dir, "dart.png"),
+            ]
+            dart_path = next((p for p in dart_path_candidates if os.path.exists(p)), dart_path_candidates[0])
             if os.path.exists(dart_path):
                 self.dart_template = cv2.imread(dart_path)
                 print("✅ Loaded dart template 1 (dart.png)")
             else:
                 print(f"❌ Could not find {dart_path}")
             
-            dart2_path = os.path.join(current_dir, "dart2.png")
+            dart2_path_candidates = [
+                os.path.join(images_dir, "dart2.png"),
+                os.path.join(current_dir, "dart2.png"),
+            ]
+            dart2_path = next((p for p in dart2_path_candidates if os.path.exists(p)), dart2_path_candidates[0])
             if os.path.exists(dart2_path):
                 self.dart_template2 = cv2.imread(dart2_path)
                 print("✅ Loaded dart template 2 (dart2.png)")
             else:
                 print(f"❌ Could not find {dart2_path}")
             
-            dart3_path = os.path.join(current_dir, "dart3.png")
+            dart3_path_candidates = [
+                os.path.join(images_dir, "dart3.png"),
+                os.path.join(current_dir, "dart3.png"),
+            ]
+            dart3_path = next((p for p in dart3_path_candidates if os.path.exists(p)), dart3_path_candidates[0])
             if os.path.exists(dart3_path):
                 self.dart_template3 = cv2.imread(dart3_path)
                 print("✅ Loaded dart template 3 (dart3.png)")
@@ -136,59 +193,157 @@ class SimpleAutoAlch:
             return None, 0
     
     def find_alch_spell(self, screen):
-        """Find alch spell in screen using both templates"""
-        # Try both alch spell templates and use the one with better confidence
+        """Find alch spell in screen using up to three templates"""
         result1, conf1 = self.find_template(screen, self.alch_spell_template, threshold=0.6)
         result2, conf2 = self.find_template(screen, self.alch_spell_template2, threshold=0.6)
-        
-        # Use whichever template gives better confidence
-        if conf1 > conf2:
-            print(f"   📊 Using alch template 1 (confidence: {conf1:.2f})")
+        result3, conf3 = self.find_template(screen, self.alch_spell_template3, threshold=0.6)
+        best_conf = max(conf1, conf2, conf3)
+        if best_conf == conf1 and result1:
+            if self.debug:
+                print(f"   📊 Using alch template 1 (confidence: {conf1:.2f})")
             return result1, conf1
-        else:
-            print(f"   📊 Using alch template 2 (confidence: {conf2:.2f})")
+        if best_conf == conf2 and result2:
+            if self.debug:
+                print(f"   📊 Using alch template 2 (confidence: {conf2:.2f})")
             return result2, conf2
+        if best_conf == conf3 and result3:
+            if self.debug:
+                print(f"   📊 Using alch template 3 (confidence: {conf3:.2f})")
+            return result3, conf3
+        return None, best_conf
     
     def find_darts(self, screen):
-        """Find darts in screen"""
-        # Try all dart templates and use the one with better confidence
+        """Find darts using template matching first (like the test), then color-based as fallback"""
+        # 1) Full-screen template matching (order mirrors test behavior)
         result1, conf1 = self.find_template(screen, self.dart_template, threshold=0.55)
         result2, conf2 = self.find_template(screen, self.dart_template2, threshold=0.55)
         result3, conf3 = self.find_template(screen, self.dart_template3, threshold=0.55)
-        
-        # Find the best confidence among all templates
         best_confidence = max(conf1, conf2, conf3)
+        if best_confidence >= 0.55:
+            if best_confidence == conf1 and result1:
+                if self.debug:
+                    print(f"   📊 Using dart template 1 (confidence: {conf1:.2f})")
+                return result1, conf1
+            if best_confidence == conf2 and result2:
+                if self.debug:
+                    print(f"   📊 Using dart template 2 (confidence: {conf2:.2f})")
+                return result2, conf2
+            if best_confidence == conf3 and result3:
+                if self.debug:
+                    print(f"   📊 Using dart template 3 (confidence: {conf3:.2f})")
+                return result3, conf3
         
-        if best_confidence == conf1 and result1:
-            print(f"   📊 Using dart template 1 (confidence: {conf1:.2f})")
-            return result1, conf1
-        elif best_confidence == conf2 and result2:
-            print(f"   📊 Using dart template 2 (confidence: {conf2:.2f})")
-            return result2, conf2
-        elif best_confidence == conf3 and result3:
-            print(f"   📊 Using dart template 3 (confidence: {conf3:.2f})")
-            return result3, conf3
-        else:
-            # Return the best confidence even if no match found
-            return None, best_confidence
+        # 2) Fallback to color-based detection with ROI confirmation
+        color_pos, color_conf = self._find_darts_by_color(screen)
+        if color_pos is not None:
+            return color_pos, color_conf
+        
+        return None, best_confidence
+
+    def _find_darts_by_color(self, screen):
+        """Detect blue-colored dart region and optionally confirm with templates.
+        Returns: (position_tuple_or_None, confidence_float)
+        """
+        try:
+            hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv, self.blue_hsv_lower, self.blue_hsv_upper)
+            kernel = np.ones((3, 3), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return None, 0.0
+
+            # Pick the largest valid blue region
+            h_img, w_img = screen.shape[:2]
+            best_region = None
+            best_area = 0.0
+            for c in contours:
+                area = float(cv2.contourArea(c))
+                if area < self.min_area_dart or area > self.max_area_dart:
+                    continue
+                x, y, w, h = cv2.boundingRect(c)
+                if x <= self.edge_margin or y <= self.edge_margin or (x + w) >= (w_img - self.edge_margin) or (y + h) >= (h_img - self.edge_margin):
+                    continue
+                if area > best_area:
+                    best_area = area
+                    best_region = (x, y, w, h)
+
+            if best_region is None:
+                return None, 0.0
+
+            x, y, w, h = best_region
+            cx, cy = x + w // 2, y + h // 2
+
+            # Try to confirm within ROI using available templates
+            roi_pad = 8
+            x1 = max(0, x - roi_pad)
+            y1 = max(0, y - roi_pad)
+            x2 = min(w_img, x + w + roi_pad)
+            y2 = min(h_img, y + h + roi_pad)
+            roi = screen[y1:y2, x1:x2]
+
+            best_pos = (cx, cy)
+            best_conf = 0.7  # default confidence if only color is used
+
+            template_candidates = [
+                (self.dart_template, "1"),
+                (self.dart_template2, "2"),
+                (self.dart_template3, "3"),
+            ]
+            for tmpl, label in template_candidates:
+                if tmpl is None:
+                    continue
+                # Local template match within ROI
+                try:
+                    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    tmpl_gray = cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
+                    res = cv2.matchTemplate(roi_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                    if max_val > best_conf:
+                        th, tw = tmpl_gray.shape
+                        abs_x = x1 + max_loc[0] + tw // 2
+                        abs_y = y1 + max_loc[1] + th // 2
+                        best_pos = (abs_x, abs_y)
+                        best_conf = float(max_val)
+                        print(f"   🎯 Color-ROI confirmed with dart template {label} (confidence: {best_conf:.2f})")
+                except Exception:
+                    # If ROI matching fails, keep color-based result
+                    pass
+
+            if best_pos is not None:
+                # Provide a small log for color detection
+                print(f"   🎨 Blue region detected at {best_pos} (area: {int(best_area)})")
+                return best_pos, best_conf
+
+            return None, 0.0
+        except Exception as e:
+            print(f"   ❌ Error in color-based dart detection: {e}")
+            return None, 0.0
     
-    def add_click_variation(self, position):
+    def add_click_variation(self, position, base_range: tuple | None = None):
         """Add random variation to click position"""
         x, y = position
         
-        # Much more natural variation - humans don't click the exact same spot
-        base_variation = random.randint(3, 8)  # Increased variation
+        # Choose base variation window
+        if base_range is None:
+            base_min, base_max = 3, 8
+        else:
+            base_min, base_max = base_range
+        base_variation = random.randint(base_min, base_max)
         
         # Add more realistic variation patterns
-        if random.random() < 0.6:  # 60% chance for moderate variation
+        roll = random.random()
+        if roll < 0.6:  # 60% chance for moderate variation
             variation_x = random.randint(-base_variation, base_variation)
             variation_y = random.randint(-base_variation, base_variation)
-        elif random.random() < 0.3:  # 30% chance for more variation
-            variation_x = random.randint(-base_variation-2, base_variation+2)
-            variation_y = random.randint(-base_variation-2, base_variation+2)
+        elif roll < 0.9:  # 30% chance for more variation
+            variation_x = random.randint(-base_variation-3, base_variation+3)
+            variation_y = random.randint(-base_variation-3, base_variation+3)
         else:  # 10% chance for significant variation
-            variation_x = random.randint(-base_variation-4, base_variation+4)
-            variation_y = random.randint(-base_variation-4, base_variation+4)
+            variation_x = random.randint(-base_variation-6, base_variation+6)
+            variation_y = random.randint(-base_variation-6, base_variation+6)
         
         click_x = x + variation_x
         click_y = y + variation_y
@@ -197,7 +352,12 @@ class SimpleAutoAlch:
     def human_click(self, position, action_name):
         """Click with human-like behavior"""
         try:
-            varied_position = self.add_click_variation(position)
+            # Increase variation specifically for alch/darts to avoid repeat pixels
+            lower_name = (action_name or "").lower()
+            if "alch" in lower_name or "darts" in lower_name:
+                varied_position = self.add_click_variation(position, base_range=(5, 12))
+            else:
+                varied_position = self.add_click_variation(position)
             x, y = varied_position
             
             # Get current mouse position
@@ -234,8 +394,9 @@ class SimpleAutoAlch:
             
             pyautogui.click(x, y)
             
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[{timestamp}] {action_name} at ({x}, {y})")
+            if self.debug:
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                print(f"[{timestamp}] {action_name} at ({x}, {y})")
             
             return True
         except Exception as e:
@@ -245,10 +406,11 @@ class SimpleAutoAlch:
     def press_key(self, key, description=""):
         """Press a key with human-like timing"""
         try:
-            if description:
-                print(f"   ⌨️ Pressing '{key}' to {description}...")
-            else:
-                print(f"   ⌨️ Pressing '{key}'...")
+            if self.debug:
+                if description:
+                    print(f"   ⌨️ Pressing '{key}' to {description}...")
+                else:
+                    print(f"   ⌨️ Pressing '{key}'...")
             time.sleep(random.uniform(0.1, 0.3))
             pyautogui.press(key)
             time.sleep(random.uniform(0.2, 0.5))
@@ -263,13 +425,30 @@ class SimpleAutoAlch:
         session_time = current_time - self.session_start_time
         time_since_last_break = current_time - self.last_break_time
         
+        # For non-debug, periodically print a concise status line
+        if not self.debug:
+            next_break_in = max(0, int(self.break_interval - time_since_last_break))
+            next_break_min = next_break_in // 60
+            next_break_sec = next_break_in % 60
+            # Estimate alchs per hour factoring break ratio so far
+            elapsed = max(1e-6, current_time - self.session_start_time)
+            effective_time = max(1e-6, elapsed - self.total_break_time)
+            alchs_per_hour = (self.click_count / effective_time) * 3600.0
+            print(
+                f"Alchs: {self.click_count} | Recoveries: {self.messed_up_count} | Next break in {next_break_min}m {next_break_sec}s (duration {self.break_duration}s) | ~{alchs_per_hour:.1f} alchs/hr"
+            )
+
         if time_since_last_break >= self.break_interval:
-            print(f"   ☕ Break time! Taking a {self.break_duration} second break...")
-            print(f"   📊 Session stats: {self.click_count} clicks in {session_time/60:.1f} minutes")
+            if self.debug:
+                print(f"   ☕ Break time! Taking a {self.break_duration} second break...")
+                print(f"   📊 Session stats: {self.click_count} clicks in {session_time/60:.1f} minutes")
+            before = time.time()
             time.sleep(self.break_duration)
+            self.total_break_time += time.time() - before
             self.last_break_time = current_time
             self.break_interval = random.randint(600, 1200)  # New random interval
-            print("   ✅ Break finished, resuming...")
+            if self.debug:
+                print("   ✅ Break finished, resuming...")
             return True
         return False
     
@@ -332,7 +511,8 @@ class SimpleAutoAlch:
             pyautogui.moveTo(waypoint_x, waypoint_y, duration=movement_duration * 0.6)
             pyautogui.moveTo(new_x, current_y, duration=movement_duration * 0.4)
             
-            print(f"   🖱️  Moved mouse from ({current_x}, {current_y}) to ({new_x}, {current_y}) to clear popup")
+            if self.debug:
+                print(f"   🖱️  Moved mouse from ({current_x}, {current_y}) to ({new_x}, {current_y}) to clear popup")
             
         except Exception as e:
             print(f"   ❌ Error moving mouse: {e}")
@@ -341,7 +521,8 @@ class SimpleAutoAlch:
         """Recover from stuck state by checking inventory for darts"""
         try:
             print("   📦 Opening inventory to look for darts...")
-            self.press_key('5', "open inventory")
+            # First try the inventory tab (key '0')
+            self.press_key(self.key_inventory, "open inventory tab")
             time.sleep(0.5)
             
             # Capture screen after opening inventory
@@ -391,16 +572,61 @@ class SimpleAutoAlch:
                     
                     # Now go back to spellbook
                     print("   📚 Returning to spellbook...")
-                    self.press_key('3', "open spellbook")
+                    self.press_key(self.key_spellbook, "open spellbook")
                     time.sleep(0.3)  # Faster return to spellbook
                     return True
             else:
                 print(f"   ❌ No darts found in inventory (best match: {dart_confidence:.2f})")
-                # Still go back to spellbook even if no darts found
-                print("   📚 Returning to spellbook...")
-                self.press_key('3', "open spellbook")
+                # Try worn equipment tab as a secondary check
+                print("   🧰 Opening worn equipment tab to double-check...")
+                self.press_key(self.key_equipment, "open worn equipment tab")
                 time.sleep(0.5)
-                return False
+                screen = self.capture_screen()
+                if screen is not None:
+                    print("   🔍 Looking for dart icon on equipment tab...")
+                    eq_pos, eq_conf = self.find_template(screen, self.dart_template3, threshold=0.55)
+                    if eq_pos and eq_conf > 0.55:
+                        print(f"   🎯 Found dart-like icon on equipment tab (confidence: {eq_conf:.2f})")
+                        # Click to unequip to inventory, confirm disappearance
+                        if self.human_click(eq_pos, "🎯 Clicked darts on worn equipment"):
+                            print("   ⏳ Waiting for darts to leave worn equipment...")
+                            max_checks = 4
+                            for check in range(max_checks):
+                                time.sleep(0.3)
+                                screen = self.capture_screen()
+                                if screen is None:
+                                    continue
+                                eq_check_pos, eq_check_conf = self.find_template(screen, self.dart_template3, threshold=0.55)
+                                if not eq_check_pos or eq_check_conf < 0.55:
+                                    print(f"   ✅ Darts no longer in worn equipment (check {check+1}/{max_checks})")
+                                    break
+                                else:
+                                    print(f"   🔍 Darts still in worn equipment (confidence: {eq_check_conf:.2f}), retrying click...")
+                                    self.human_click(eq_check_pos, "🎯 Clicked darts on worn equipment (retry)")
+                        # After unequip attempts, switch to inventory and verify presence
+                        print("   📦 Switching to inventory to verify darts are present...")
+                        self.press_key(self.key_inventory, "open inventory tab")
+                        time.sleep(0.3)
+                        inv_screen = self.capture_screen()
+                        inventory_has_darts = False
+                        if inv_screen is not None:
+                            inv_pos, inv_conf = self.find_template(inv_screen, self.dart_template3, threshold=0.55)
+                            if inv_pos and inv_conf > 0.55:
+                                print(f"   ✅ Darts detected in inventory (confidence: {inv_conf:.2f})")
+                                inventory_has_darts = True
+                            else:
+                                print(f"   ⚠️  Darts not detected in inventory (best match: {inv_conf if 'inv_conf' in locals() else 0.0:.2f})")
+                    else:
+                        print(f"   ❌ No dart-like icon on equipment tab (best match: {eq_conf if 'eq_conf' in locals() else 0.0:.2f})")
+                # Return to spellbook
+                print("   📚 Returning to spellbook...")
+                self.press_key(self.key_spellbook, "open spellbook")
+                time.sleep(0.5)
+                # If we successfully moved darts to inventory, signal recovery success and count as messed up
+                success = True if 'inventory_has_darts' in locals() and inventory_has_darts else False
+                if success:
+                    self.messed_up_count += 1
+                return success
                 
         except Exception as e:
             print(f"   ❌ Error during inventory recovery: {e}")
@@ -427,6 +653,8 @@ class SimpleAutoAlch:
         
         # Start keyboard listener for pause functionality
         self.start_keyboard_listener()
+        if self.is_paused:
+            print("⏸️  Script PAUSED - Click game and press 'p' to start...")
         
         self.is_running = True
         
@@ -451,17 +679,20 @@ class SimpleAutoAlch:
                     # First try to find alch spell without pressing '3'
                     alch_position, alch_confidence = self.find_alch_spell(screen)
                     
-                    if alch_position and alch_confidence > 0.7:
-                        print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
+                    if alch_position and alch_confidence > 0.62:
+                        if self.debug:
+                            print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
                         if self.human_click(alch_position, "🔮 Clicked alch spell"):
                             self.waiting_for_alch_spell = False
                             self.waiting_for_darts = True
+                            self.alch_armed = True
                             print("   🔄 Now looking for darts...")
-                            print("   ⏳ Waiting for alch spell animation...")
-                            time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                     else:
+                        if self.debug:
+                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
                         # Only press '3' if we can't find the alch spell
-                        print("   🔍 Alch spell not found, pressing '3' to open spellbook...")
+                        if self.debug:
+                            print("   🔍 Alch spell not found, pressing '3' to open spellbook...")
                         self.press_key('3', "open spellbook")
                         time.sleep(0.5)
                         
@@ -469,17 +700,20 @@ class SimpleAutoAlch:
                         screen = self.capture_screen()
                         if screen is not None:
                             alch_position, alch_confidence = self.find_alch_spell(screen)
-                            if alch_position and alch_confidence > 0.7:
-                                print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
+                            if alch_position and alch_confidence > 0.62:
+                                if self.debug:
+                                    print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
                                 if self.human_click(alch_position, "🔮 Clicked alch spell"):
                                     self.waiting_for_alch_spell = False
                                     self.waiting_for_darts = True
+                                    self.alch_armed = True
                                     print("   🔄 Now looking for darts...")
-                                    print("   ⏳ Waiting for alch spell animation...")
-                                    time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                             else:
+                                if self.debug:
+                                    print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
                                 # Alch spell not found - might be covered by popup, move mouse away
-                                print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
+                                if self.debug:
+                                    print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
                                 self.move_mouse_away_from_spells()
                                 time.sleep(0.3)  # Brief wait for popup to disappear
                                 
@@ -487,19 +721,22 @@ class SimpleAutoAlch:
                                 screen = self.capture_screen()
                                 if screen is not None:
                                     alch_position, alch_confidence = self.find_alch_spell(screen)
-                                    if alch_position and alch_confidence > 0.7:
-                                        print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
+                                    if alch_position and alch_confidence > 0.62:
+                                        if self.debug:
+                                            print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
                                         if self.human_click(alch_position, "🔮 Clicked alch spell"):
                                             self.waiting_for_alch_spell = False
                                             self.waiting_for_darts = True
+                                            self.alch_armed = True
                                             print("   🔄 Now looking for darts...")
-                                            print("   ⏳ Waiting for alch spell animation...")
-                                            time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                                     else:
-                                        print("   🔍 Alch spell still not found after moving mouse, retrying...")
+                                        if self.debug:
+                                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
+                                            print("   🔍 Alch spell still not found after moving mouse, retrying...")
                                         time.sleep(0.5)
                                 else:
-                                    print("   🔍 Alch spell still not found, retrying...")
+                                    if self.debug:
+                                        print("   🔍 Alch spell still not found, retrying...")
                                     time.sleep(0.5)
                         
                         # Capture new frame after pressing key
@@ -507,17 +744,20 @@ class SimpleAutoAlch:
                         if updated_screen is not None:
                             alch_position, alch_confidence = self.find_alch_spell(updated_screen)
                             
-                            if alch_position and alch_confidence > 0.7:
-                                print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
+                            if alch_position and alch_confidence > 0.62:
+                                if self.debug:
+                                    print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
                                 if self.human_click(alch_position, "🔮 Clicked alch spell"):
                                     self.waiting_for_alch_spell = False
                                     self.waiting_for_darts = True
+                                    self.alch_armed = True
                                     print("   🔄 Now looking for darts...")
-                                    print("   ⏳ Waiting for alch spell animation...")
-                                    time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                             else:
+                                if self.debug:
+                                    print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
                                 # Alch spell not found - might be covered by popup, move mouse away
-                                print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
+                                if self.debug:
+                                    print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
                                 self.move_mouse_away_from_spells()
                                 time.sleep(0.3)  # Brief wait for popup to disappear
                                 
@@ -525,46 +765,65 @@ class SimpleAutoAlch:
                                 screen = self.capture_screen()
                                 if screen is not None:
                                     alch_position, alch_confidence = self.find_alch_spell(screen)
-                                    if alch_position and alch_confidence > 0.7:
-                                        print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
+                                    if alch_position and alch_confidence > 0.62:
+                                        if self.debug:
+                                            print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
                                         if self.human_click(alch_position, "🔮 Clicked alch spell"):
                                             self.waiting_for_alch_spell = False
                                             self.waiting_for_darts = True
+                                            self.alch_armed = True
                                             print("   🔄 Now looking for darts...")
-                                            print("   ⏳ Waiting for alch spell animation...")
-                                            time.sleep(random.uniform(2.0, 3.0))  # Wait for alch spell animation
                                     else:
-                                        print("   🔍 Alch spell still not found after moving mouse, retrying...")
+                                        if self.debug:
+                                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
+                                            print("   🔍 Alch spell still not found after moving mouse, retrying...")
                                         time.sleep(0.5)
                                 else:
-                                    print("   🔍 Alch spell still not found, retrying...")
+                                    if self.debug:
+                                        print("   🔍 Alch spell still not found, retrying...")
                                     time.sleep(0.5)
                 
                 elif self.waiting_for_darts:
-                    print("   🔍 Looking for darts...")
+                    if self.debug:
+                        print("   🔍 Looking for darts...")
                     dart_position, dart_confidence = self.find_darts(screen)
                     
                     if dart_position and dart_confidence > 0.55:
-                        print(f"   🎯 Found darts (confidence: {dart_confidence:.2f})")
+                        if self.debug:
+                            print(f"   🎯 Found darts (confidence: {dart_confidence:.2f})")
+                        # Only click darts if alch was just clicked (armed)
+                        if not self.alch_armed:
+                            print("   ⚠️  Skipping darts click because alch is not armed.")
+                            time.sleep(0.2)
+                            continue
                         if self.human_click(dart_position, "🎯 Clicked darts"):
+                            # Wait for alch animation AFTER clicking darts
+                            if self.debug:
+                                print("   ⏳ Waiting for alch animation to finish...")
+                            time.sleep(random.uniform(2.0, 3.0))
                             self.click_count += 1
-                            print(f"   📊 Total clicks: {self.click_count}")
+                            if self.debug:
+                                print(f"   📊 Total clicks: {self.click_count}")
                             self.waiting_for_alch_spell = True
                             self.waiting_for_darts = False
+                            self.alch_armed = False
                             self.dart_fail_count = 0  # Reset fail count on success
-                            print("   🔄 Now looking for alch spell...")
-                            time.sleep(random.uniform(0.5, 1.0))
+                            if self.debug:
+                                print("   🔄 Now looking for alch spell...")
                     else:
                         self.dart_fail_count += 1
-                        print(f"   🔍 Darts not found (best match: {dart_confidence:.2f}), attempt {self.dart_fail_count}/{self.max_dart_fails}")
+                        if self.debug:
+                            print(f"   🔍 Darts not found (best match: {dart_confidence:.2f}), attempt {self.dart_fail_count}/{self.max_dart_fails}")
                         
                         # If we've failed too many times, try inventory recovery
                         if self.dart_fail_count >= self.max_dart_fails:
-                            print("   🚨 Too many dart failures - attempting inventory recovery...")
+                            if self.debug:
+                                print("   🚨 Too many dart failures - attempting inventory recovery...")
                             if self.recover_from_inventory():
                                 self.dart_fail_count = 0  # Reset counter
                                 self.waiting_for_alch_spell = True
                                 self.waiting_for_darts = False
+                                self.alch_armed = False
                                 print("   ✅ Recovery successful - returning to alch spell...")
                             else:
                                 print("   ❌ Recovery failed - continuing to retry...")
