@@ -39,6 +39,10 @@ class SimpleAutoAlch:
         self.dart_fail_count = 0
         self.max_dart_fails = 3  # After 3 failed attempts, try inventory recovery
         
+        # Alch spell recovery tracking
+        self.alch_fail_count = 0
+        self.max_alch_fails = 3  # After 5 failed attempts, press '3' to open spellbook
+        
         # Keyboard listener for pause functionality
         self.keyboard_listener = None
         
@@ -68,103 +72,54 @@ class SimpleAutoAlch:
     def load_templates(self):
         """Load the template images"""
         try:
-            # Load alch spell templates
-            self.alch_spell_template = None
-            self.alch_spell_template2 = None
-            self.alch_spell_template3 = None
-            
-            # Get absolute paths (prefer images/ subdirectory, fallback to current dir)
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            images_dir = os.path.join(current_dir, "images")
-            alch_path_candidates = [
-                os.path.join(images_dir, "alc-spell.png"),
-                os.path.join(current_dir, "alc-spell.png"),
-            ]
-            alch2_path_candidates = [
-                os.path.join(images_dir, "alc-spell2.png"),
-                os.path.join(current_dir, "alc-spell2.png"),
-            ]
-            alch3_path_candidates = [
-                os.path.join(images_dir, "alc-spell3.png"),
-                os.path.join(current_dir, "alc-spell3.png"),
-            ]
-            # Resolve first existing candidate
-            alch_path = next((p for p in alch_path_candidates if os.path.exists(p)), alch_path_candidates[0])
-            alch2_path = next((p for p in alch2_path_candidates if os.path.exists(p)), alch2_path_candidates[0])
-            alch3_path = next((p for p in alch3_path_candidates if os.path.exists(p)), alch3_path_candidates[0])
-            
-            print(f"Looking for alch templates in: {current_dir}")
-            print(f"Full path 1: {alch_path}")
-            print(f"Full path 2: {alch2_path}")
-            
-            if os.path.exists(alch_path):
-                self.alch_spell_template = cv2.imread(alch_path)
-                print("✅ Loaded alch spell template 1 (alc-spell.png)")
-            else:
-                print(f"❌ Could not find {alch_path}")
-            
-            if os.path.exists(alch2_path):
-                self.alch_spell_template2 = cv2.imread(alch2_path)
-                print("✅ Loaded alch spell template 2 (alc-spell2.png)")
-            else:
-                print(f"❌ Could not find {alch2_path}")
-            
-            if os.path.exists(alch3_path):
-                self.alch_spell_template3 = cv2.imread(alch3_path)
-                print("✅ Loaded alch spell template 3 (alc-spell3.png)")
-            else:
-                print(f"❌ Could not find {alch3_path}")
-            
-            if self.alch_spell_template is None and self.alch_spell_template2 is None and self.alch_spell_template3 is None:
-                print("❌ No alch spell templates found. Please create alc-spell.png, alc-spell2.png, or alc-spell3.png")
+            # Load alch spell templates using the new find_item approach
+            self.alch_spell_templates = self.load_item_templates("alc-spell")
+            if not self.alch_spell_templates:
+                print("❌ No alch spell templates found. Please create alc-spell*.png files")
                 return False
             
-            # Load dart templates
-            self.dart_template = None
-            self.dart_template2 = None
-            self.dart_template3 = None
-            
-            dart_path_candidates = [
-                os.path.join(images_dir, "dart.png"),
-                os.path.join(current_dir, "dart.png"),
-            ]
-            dart_path = next((p for p in dart_path_candidates if os.path.exists(p)), dart_path_candidates[0])
-            if os.path.exists(dart_path):
-                self.dart_template = cv2.imread(dart_path)
-                print("✅ Loaded dart template 1 (dart.png)")
-            else:
-                print(f"❌ Could not find {dart_path}")
-            
-            dart2_path_candidates = [
-                os.path.join(images_dir, "dart2.png"),
-                os.path.join(current_dir, "dart2.png"),
-            ]
-            dart2_path = next((p for p in dart2_path_candidates if os.path.exists(p)), dart2_path_candidates[0])
-            if os.path.exists(dart2_path):
-                self.dart_template2 = cv2.imread(dart2_path)
-                print("✅ Loaded dart template 2 (dart2.png)")
-            else:
-                print(f"❌ Could not find {dart2_path}")
-            
-            dart3_path_candidates = [
-                os.path.join(images_dir, "dart3.png"),
-                os.path.join(current_dir, "dart3.png"),
-            ]
-            dart3_path = next((p for p in dart3_path_candidates if os.path.exists(p)), dart3_path_candidates[0])
-            if os.path.exists(dart3_path):
-                self.dart_template3 = cv2.imread(dart3_path)
-                print("✅ Loaded dart template 3 (dart3.png)")
-            else:
-                print(f"❌ Could not find {dart3_path}")
-            
-            if self.dart_template is None and self.dart_template2 is None and self.dart_template3 is None:
-                print("❌ No dart templates found. Please create dart.png, dart2.png, or dart3.png")
+            # Load dart templates using the new find_item approach
+            self.dart_templates = self.load_item_templates("dart")
+            if not self.dart_templates:
+                print("❌ No dart templates found. Please create dart*.png files")
                 return False
                 
             return True
         except Exception as e:
             print(f"Error loading templates: {e}")
             return False
+    
+    def load_item_templates(self, item_name):
+        """Load all templates for a given item name from images directory"""
+        templates = []
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        images_dir = os.path.join(current_dir, "images")
+        
+        # Look for files matching the pattern: item_name*.png
+        import glob
+        pattern = os.path.join(images_dir, f"{item_name}*.png")
+        template_files = glob.glob(pattern)
+        
+        # Also check current directory
+        current_pattern = os.path.join(current_dir, f"{item_name}*.png")
+        template_files.extend(glob.glob(current_pattern))
+        
+        # Remove duplicates and sort for consistent ordering
+        template_files = sorted(list(set(template_files)))
+        
+        for template_file in template_files:
+            try:
+                template = cv2.imread(template_file)
+                if template is not None:
+                    templates.append(template)
+                    filename = os.path.basename(template_file)
+                    print(f"✅ Loaded {item_name} template: {filename}")
+                else:
+                    print(f"❌ Failed to load {template_file}")
+            except Exception as e:
+                print(f"❌ Error loading {template_file}: {e}")
+        
+        return templates
     
     def find_template(self, screen, template, threshold=0.7):
         """Find template in screen using template matching"""
@@ -192,53 +147,64 @@ class SimpleAutoAlch:
             print(f"Error in template matching: {e}")
             return None, 0
     
+    def find_spell(self, screen, spell_name, threshold=0.62):
+        """Find any spell using the generic find_item method"""
+        return self.find_item(screen, spell_name, threshold=threshold, use_color_fallback=False)
+    
     def find_alch_spell(self, screen):
-        """Find alch spell in screen using up to three templates"""
-        result1, conf1 = self.find_template(screen, self.alch_spell_template, threshold=0.6)
-        result2, conf2 = self.find_template(screen, self.alch_spell_template2, threshold=0.6)
-        result3, conf3 = self.find_template(screen, self.alch_spell_template3, threshold=0.6)
-        best_conf = max(conf1, conf2, conf3)
-        if best_conf == conf1 and result1:
+        """Find alch spell using the generic find_spell method"""
+        return self.find_spell(screen, "alc-spell", threshold=0.62)
+    
+    def find_item(self, screen, item_name, threshold=0.55, use_color_fallback=False):
+        """Generic method to find any item using template matching and optional color fallback"""
+        # Handle special case for alch spell templates
+        if item_name == "alc-spell":
+            attr_name = "alch_spell_templates"
+        else:
+            attr_name = f"{item_name}_templates"
+        
+        if not hasattr(self, attr_name):
+            print(f"❌ No templates loaded for {item_name}")
+            return None, 0.0
+        
+        templates = getattr(self, attr_name, [])
+        if not templates:
+            print(f"❌ No templates available for {item_name}")
+            return None, 0.0
+        
+        # 1) Template matching with all available templates
+        best_result = None
+        best_confidence = 0.0
+        best_template_index = -1
+        
+        for i, template in enumerate(templates):
+            result, confidence = self.find_template(screen, template, threshold=threshold)
+            if confidence > best_confidence:
+                best_confidence = confidence
+                best_result = result
+                best_template_index = i
+        
+        # Return template match if any template has good confidence
+        if best_confidence >= threshold and best_result:
             if self.debug:
-                print(f"   📊 Using alch template 1 (confidence: {conf1:.2f})")
-            return result1, conf1
-        if best_conf == conf2 and result2:
-            if self.debug:
-                print(f"   📊 Using alch template 2 (confidence: {conf2:.2f})")
-            return result2, conf2
-        if best_conf == conf3 and result3:
-            if self.debug:
-                print(f"   📊 Using alch template 3 (confidence: {conf3:.2f})")
-            return result3, conf3
-        return None, best_conf
+                print(f"   📊 Using {item_name} template {best_template_index + 1} (confidence: {best_confidence:.2f})")
+            return best_result, best_confidence
+        
+        # 2) Optional color-based detection as fallback
+        if use_color_fallback and best_confidence < 0.3:
+            print(f"   🎨 Template matching failed (best: {best_confidence:.2f}), trying color detection...")
+            color_pos, color_conf = self._find_darts_by_color(screen)  # For now, only darts have color detection
+            if color_pos is not None and color_conf > 0.8:
+                return color_pos, color_conf
+        
+        # Return template match even if below threshold, but don't use color fallback
+        if self.debug and best_confidence > 0.3:
+            print(f"   📊 Best {item_name} template match: {best_confidence:.2f} (need ≥ {threshold})")
+        return None, best_confidence
     
     def find_darts(self, screen):
-        """Find darts using template matching first (like the test), then color-based as fallback"""
-        # 1) Full-screen template matching (order mirrors test behavior)
-        result1, conf1 = self.find_template(screen, self.dart_template, threshold=0.55)
-        result2, conf2 = self.find_template(screen, self.dart_template2, threshold=0.55)
-        result3, conf3 = self.find_template(screen, self.dart_template3, threshold=0.55)
-        best_confidence = max(conf1, conf2, conf3)
-        if best_confidence >= 0.55:
-            if best_confidence == conf1 and result1:
-                if self.debug:
-                    print(f"   📊 Using dart template 1 (confidence: {conf1:.2f})")
-                return result1, conf1
-            if best_confidence == conf2 and result2:
-                if self.debug:
-                    print(f"   📊 Using dart template 2 (confidence: {conf2:.2f})")
-                return result2, conf2
-            if best_confidence == conf3 and result3:
-                if self.debug:
-                    print(f"   📊 Using dart template 3 (confidence: {conf3:.2f})")
-                return result3, conf3
-        
-        # 2) Fallback to color-based detection with ROI confirmation
-        color_pos, color_conf = self._find_darts_by_color(screen)
-        if color_pos is not None:
-            return color_pos, color_conf
-        
-        return None, best_confidence
+        """Find darts using the generic find_item method with color fallback"""
+        return self.find_item(screen, "dart", threshold=0.55, use_color_fallback=True)
 
     def _find_darts_by_color(self, screen):
         """Detect blue-colored dart region and optionally confirm with templates.
@@ -285,13 +251,11 @@ class SimpleAutoAlch:
             roi = screen[y1:y2, x1:x2]
 
             best_pos = (cx, cy)
-            best_conf = 0.7  # default confidence if only color is used
+            best_conf = 0.8  # higher default confidence for color detection
 
-            template_candidates = [
-                (self.dart_template, "1"),
-                (self.dart_template2, "2"),
-                (self.dart_template3, "3"),
-            ]
+            template_candidates = []
+            for i, template in enumerate(self.dart_templates):
+                template_candidates.append((template, str(i + 1)))
             for tmpl, label in template_candidates:
                 if tmpl is None:
                     continue
@@ -531,9 +495,9 @@ class SimpleAutoAlch:
                 print("   ❌ Could not capture screen for inventory recovery")
                 return False
             
-            # Look for darts in inventory (using dart3 template)
+            # Look for darts in inventory (using first available template)
             print("   🔍 Looking for darts in inventory...")
-            dart_position, dart_confidence = self.find_template(screen, self.dart_template3, threshold=0.55)
+            dart_position, dart_confidence = self.find_item(screen, "dart", threshold=0.55)
             
             if dart_position and dart_confidence > 0.55:
                 print(f"   🎯 Found darts in inventory (confidence: {dart_confidence:.2f})")
@@ -551,7 +515,7 @@ class SimpleAutoAlch:
                             continue
                         
                         # Check if darts are still visible
-                        dart_position, dart_confidence = self.find_template(screen, self.dart_template3, threshold=0.55)
+                        dart_position, dart_confidence = self.find_item(screen, "dart", threshold=0.55)
                         if dart_position is None or dart_confidence < 0.55:
                             print(f"   ✅ Darts no longer visible on screen (check {check + 1}/{max_checks})")
                             darts_disappeared = True
@@ -564,7 +528,7 @@ class SimpleAutoAlch:
                         print("   ⚠️  Darts still visible after clicking, trying one more time...")
                         screen = self.capture_screen()
                         if screen is not None:
-                            dart_position, dart_confidence = self.find_template(screen, self.dart_template3, threshold=0.55)
+                            dart_position, dart_confidence = self.find_item(screen, "dart", threshold=0.55)
                             if dart_position and dart_confidence > 0.55:
                                 print(f"   🎯 Clicking darts again (confidence: {dart_confidence:.2f})")
                                 self.human_click(dart_position, "🎯 Clicked darts in inventory (retry)")
@@ -584,7 +548,7 @@ class SimpleAutoAlch:
                 screen = self.capture_screen()
                 if screen is not None:
                     print("   🔍 Looking for dart icon on equipment tab...")
-                    eq_pos, eq_conf = self.find_template(screen, self.dart_template3, threshold=0.55)
+                    eq_pos, eq_conf = self.find_item(screen, "dart", threshold=0.55)
                     if eq_pos and eq_conf > 0.55:
                         print(f"   🎯 Found dart-like icon on equipment tab (confidence: {eq_conf:.2f})")
                         # Click to unequip to inventory, confirm disappearance
@@ -596,7 +560,7 @@ class SimpleAutoAlch:
                                 screen = self.capture_screen()
                                 if screen is None:
                                     continue
-                                eq_check_pos, eq_check_conf = self.find_template(screen, self.dart_template3, threshold=0.55)
+                                eq_check_pos, eq_check_conf = self.find_item(screen, "dart", threshold=0.55)
                                 if not eq_check_pos or eq_check_conf < 0.55:
                                     print(f"   ✅ Darts no longer in worn equipment (check {check+1}/{max_checks})")
                                     break
@@ -610,7 +574,7 @@ class SimpleAutoAlch:
                         inv_screen = self.capture_screen()
                         inventory_has_darts = False
                         if inv_screen is not None:
-                            inv_pos, inv_conf = self.find_template(inv_screen, self.dart_template3, threshold=0.55)
+                            inv_pos, inv_conf = self.find_item(inv_screen, "dart", threshold=0.55)
                             if inv_pos and inv_conf > 0.55:
                                 print(f"   ✅ Darts detected in inventory (confidence: {inv_conf:.2f})")
                                 inventory_has_darts = True
@@ -676,7 +640,7 @@ class SimpleAutoAlch:
                 if self.waiting_for_alch_spell:
                     print("   🔍 Looking for alch spell...")
                     
-                    # First try to find alch spell without pressing '3'
+                    # Try to find alch spell
                     alch_position, alch_confidence = self.find_alch_spell(screen)
                     
                     if alch_position and alch_confidence > 0.62:
@@ -686,102 +650,47 @@ class SimpleAutoAlch:
                             self.waiting_for_alch_spell = False
                             self.waiting_for_darts = True
                             self.alch_armed = True
+                            self.alch_fail_count = 0  # Reset fail count on success
                             print("   🔄 Now looking for darts...")
                     else:
+                        self.alch_fail_count += 1
                         if self.debug:
-                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
-                        # Only press '3' if we can't find the alch spell
-                        if self.debug:
-                            print("   🔍 Alch spell not found, pressing '3' to open spellbook...")
-                        self.press_key('3', "open spellbook")
-                        time.sleep(0.5)
+                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62), attempt {self.alch_fail_count}/{self.max_alch_fails}")
                         
-                        # Check again after pressing '3'
-                        screen = self.capture_screen()
-                        if screen is not None:
-                            alch_position, alch_confidence = self.find_alch_spell(screen)
-                            if alch_position and alch_confidence > 0.62:
-                                if self.debug:
-                                    print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
-                                if self.human_click(alch_position, "🔮 Clicked alch spell"):
-                                    self.waiting_for_alch_spell = False
-                                    self.waiting_for_darts = True
-                                    self.alch_armed = True
-                                    print("   🔄 Now looking for darts...")
-                            else:
-                                if self.debug:
-                                    print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
-                                # Alch spell not found - might be covered by popup, move mouse away
-                                if self.debug:
-                                    print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
-                                self.move_mouse_away_from_spells()
-                                time.sleep(0.3)  # Brief wait for popup to disappear
-                                
-                                # Check again after moving mouse
-                                screen = self.capture_screen()
-                                if screen is not None:
-                                    alch_position, alch_confidence = self.find_alch_spell(screen)
-                                    if alch_position and alch_confidence > 0.62:
-                                        if self.debug:
-                                            print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
-                                        if self.human_click(alch_position, "🔮 Clicked alch spell"):
-                                            self.waiting_for_alch_spell = False
-                                            self.waiting_for_darts = True
-                                            self.alch_armed = True
-                                            print("   🔄 Now looking for darts...")
-                                    else:
-                                        if self.debug:
-                                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
-                                            print("   🔍 Alch spell still not found after moving mouse, retrying...")
-                                        time.sleep(0.5)
-                                else:
-                                    if self.debug:
-                                        print("   🔍 Alch spell still not found, retrying...")
-                                    time.sleep(0.5)
-                        
-                        # Capture new frame after pressing key
-                        updated_screen = self.capture_screen()
-                        if updated_screen is not None:
-                            alch_position, alch_confidence = self.find_alch_spell(updated_screen)
+                        # If we've failed too many times, press '3' to open spellbook
+                        if self.alch_fail_count >= self.max_alch_fails:
+                            print("   📚 Alch spell not found - pressing '3' to open spellbook...")
+                            self.press_key('3', "open spellbook")
+                            time.sleep(0.5)
+                            self.alch_fail_count = 0  # Reset counter after pressing '3'
                             
-                            if alch_position and alch_confidence > 0.62:
-                                if self.debug:
-                                    print(f"   🔮 Found alch spell (confidence: {alch_confidence:.2f})")
-                                if self.human_click(alch_position, "🔮 Clicked alch spell"):
-                                    self.waiting_for_alch_spell = False
-                                    self.waiting_for_darts = True
-                                    self.alch_armed = True
-                                    print("   🔄 Now looking for darts...")
-                            else:
-                                if self.debug:
-                                    print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
-                                # Alch spell not found - might be covered by popup, move mouse away
-                                if self.debug:
-                                    print("   🔍 Alch spell not found - moving mouse to clear potential popup...")
-                                self.move_mouse_away_from_spells()
-                                time.sleep(0.3)  # Brief wait for popup to disappear
-                                
-                                # Check again after moving mouse
-                                screen = self.capture_screen()
-                                if screen is not None:
-                                    alch_position, alch_confidence = self.find_alch_spell(screen)
-                                    if alch_position and alch_confidence > 0.62:
-                                        if self.debug:
-                                            print(f"   🔮 Found alch spell after moving mouse (confidence: {alch_confidence:.2f})")
-                                        if self.human_click(alch_position, "🔮 Clicked alch spell"):
-                                            self.waiting_for_alch_spell = False
-                                            self.waiting_for_darts = True
-                                            self.alch_armed = True
-                                            print("   🔄 Now looking for darts...")
-                                    else:
-                                        if self.debug:
-                                            print(f"   ℹ️  Current alch confidence: {alch_confidence:.2f} (need ≥ 0.62)")
-                                            print("   🔍 Alch spell still not found after moving mouse, retrying...")
-                                        time.sleep(0.5)
+                            # Check again after pressing '3'
+                            screen = self.capture_screen()
+                            if screen is not None:
+                                alch_position, alch_confidence = self.find_alch_spell(screen)
+                                if alch_position and alch_confidence > 0.62:
+                                    if self.debug:
+                                        print(f"   🔮 Found alch spell after opening spellbook (confidence: {alch_confidence:.2f})")
+                                    if self.human_click(alch_position, "🔮 Clicked alch spell"):
+                                        self.waiting_for_alch_spell = False
+                                        self.waiting_for_darts = True
+                                        self.alch_armed = True
+                                        print("   🔄 Now looking for darts...")
                                 else:
                                     if self.debug:
-                                        print("   🔍 Alch spell still not found, retrying...")
-                                    time.sleep(0.5)
+                                        print(f"   ℹ️  Still no alch spell found (confidence: {alch_confidence:.2f})")
+                                    # Try moving mouse away to clear potential popups
+                                    self.move_mouse_away_from_spells()
+                                    time.sleep(0.3)
+                        else:
+                            # Try moving mouse away to clear potential popups on early failures
+                            if self.alch_fail_count >= 2:
+                                if self.debug:
+                                    print("   🔍 Moving mouse to clear potential popup...")
+                                self.move_mouse_away_from_spells()
+                                time.sleep(0.3)
+                            else:
+                                time.sleep(0.5)
                 
                 elif self.waiting_for_darts:
                     if self.debug:
