@@ -708,26 +708,63 @@ class AutoActionFunctions:
                 if not self._click_skills_tab():
                     return False
             
-            # Quick wait for stats page to load
-            time.sleep(random.uniform(0.2, 0.4))
+            # Step 2: Wait for stats page to load with retry logic
+            max_load_attempts = 3
+            stats_loaded = False
             
-            # Step 2: Capture screen to check if stats page is open
-            screen = self.capture_screen()
-            if screen is None:
-                print("❌ Could not capture screen")
+            for load_attempt in range(max_load_attempts):
+                # Wait progressively longer for page to load
+                wait_time = random.uniform(0.3 + load_attempt * 0.2, 0.6 + load_attempt * 0.3)
+                time.sleep(wait_time)
+                
+                # Capture screen to check if stats page is open
+                screen = self.capture_screen()
+                if screen is None:
+                    print(f"❌ Could not capture screen (attempt {load_attempt + 1})")
+                    continue
+                
+                # Step 3: Check if stats.png template is visible (optional verification)
+                if self.stats_template is not None:
+                    stats_position, stats_confidence = self.find_template(screen, self.stats_template, threshold=0.6)
+                    if stats_position and stats_confidence > 0.6:
+                        print(f"✅ Stats page detected (confidence: {stats_confidence:.2f})")
+                        stats_loaded = True
+                        break
+                    else:
+                        print(f"⚠️ Stats page detection uncertain (confidence: {stats_confidence:.2f}, attempt {load_attempt + 1})")
+                        if load_attempt < max_load_attempts - 1:
+                            print(f"   ⏳ Waiting longer for page to load...")
+                else:
+                    # If no stats template, assume page loaded after reasonable wait
+                    if load_attempt >= 1:
+                        print(f"✅ Stats page assumed loaded (no template available)")
+                        stats_loaded = True
+                        break
+            
+            if not stats_loaded:
+                print("❌ Stats page failed to load after multiple attempts")
                 return False
             
-            # Step 3: Check if stats.png template is visible (optional verification)
-            if self.stats_template is not None:
-                stats_position, stats_confidence = self.find_template(screen, self.stats_template, threshold=0.6)
-                if stats_position and stats_confidence > 0.6:
-                    print(f"✅ Stats page detected (confidence: {stats_confidence:.2f})")
-                else:
-                    print(f"⚠️ Stats page detection uncertain (confidence: {stats_confidence:.2f})")
+            # Step 4: Find the position of the leveling skill with retry
+            skill_position = None
+            max_skill_attempts = 2
             
-            # Step 4: Find the position of the leveling skill
-            skill_position = self.find_skill_position(screen, leveling_skill)
+            for skill_attempt in range(max_skill_attempts):
+                skill_position = self.find_skill_position(screen, leveling_skill)
+                if skill_position is not None:
+                    break
+                else:
+                    if skill_attempt < max_skill_attempts - 1:
+                        print(f"   🔄 Retrying skill detection...")
+                        time.sleep(0.5)  # Brief pause before retry
+                        # Re-capture screen for retry
+                        screen = self.capture_screen()
+                        if screen is None:
+                            print("❌ Could not capture screen for skill retry")
+                            return False
+            
             if skill_position is None:
+                print(f"❌ Could not find {leveling_skill} skill after {max_skill_attempts} attempts")
                 return False
             
             # Step 5: Move mouse to hover over the skill
